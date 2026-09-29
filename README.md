@@ -1,6 +1,6 @@
 # RangeDoc — Physical Therapist & Chiropractor Directory
 
-A complete, city-based healthcare provider directory built with **Next.js 16 (App Router)**, **React 19**, **TypeScript**, **Tailwind CSS 4**, **Prisma 7** and **MySQL**.
+A complete, city-based healthcare provider directory built with **Next.js 16 (App Router)**, **React 19**, **TypeScript**, **Tailwind CSS 4**, **Prisma 7** and **PostgreSQL**.
 
 Visitors search for licensed Physical Therapists and Chiropractors by pain area and location, compare providers, and contact them (appointment request, call, email, website). Providers claim their profiles (free or paid plans) and manage everything from their dashboard. Admins control all content, pricing, SEO, payments and analytics from `/admin`.
 
@@ -10,7 +10,7 @@ Visitors search for licensed Physical Therapists and Chiropractors by pain area 
 
 ### Requirements
 - **Node.js 20.19+** (22 LTS recommended)
-- **MySQL 8+** or **MariaDB 10.6+**
+- **PostgreSQL 14+** (local, Docker, or hosted: Neon, Supabase, AWS RDS, Railway…)
 
 ### Install
 ```bash
@@ -19,15 +19,17 @@ npm install
 
 # 2. Create your environment file and edit it
 cp .env.example .env
-#    DATABASE_URL="mysql://USER:PASSWORD@localhost:3306/rangedoc"
+#    DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/rangedoc?schema=public"
+#    (hosted databases usually need  ?sslmode=require  at the end)
 #    AUTH_SECRET=<long random string>   (run: openssl rand -base64 48)
 #    NEXT_PUBLIC_SITE_URL="http://localhost:3000"
 
-# 3. Create an empty database first, e.g. in MySQL:
-#    CREATE DATABASE rangedoc CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+# 3. Create an empty database first, e.g. in psql:
+#    CREATE DATABASE rangedoc;
+#    (or with Docker:  docker run -d --name rangedoc-db -e POSTGRES_PASSWORD=password -e POSTGRES_DB=rangedoc -p 5432:5432 postgres:17)
 
 # 4. Create the tables and load demo content
-npm run setup          # = prisma generate + prisma db push + prisma db seed
+npm run setup          # = prisma generate + prisma migrate deploy + prisma db seed
 
 # 5. Run it
 npm run dev            # http://localhost:3000
@@ -50,7 +52,7 @@ npm start              # or run behind PM2 / systemd / Docker
 ```
 - Set `NEXT_PUBLIC_SITE_URL` to your real domain (used for SEO canonical URLs, sitemap, emails and payment return URLs).
 - Uploaded files are saved in `storage/uploads` (change with `UPLOAD_DIR`). **Keep this folder on persistent disk and back it up.** On serverless hosts without a disk, switch `src/lib/uploads.ts` to S3/Cloudflare R2.
-- For schema changes over time, prefer migrations: `npm run db:migrate` (dev) → `npm run db:deploy` (production).
+- Database tables come from the migrations in `prisma/migrations` (`npm run db:deploy` on each release). When you change `schema.prisma`, run `npm run db:migrate` in development to create a new migration, then `npm run db:deploy` in production.
 
 ---
 
@@ -81,6 +83,20 @@ npm start              # or run behind PM2 / systemd / Docker
 
 ---
 
+### 2d. Import doctors from a CSV file
+Admin → **Import Providers (CSV)** adds or updates many doctors at once:
+1. Click **Download template** (also in this project: `docs/providers-import-template.csv`), fill it in with Excel or Google Sheets, and save as **CSV UTF-8**. The full column reference is in `docs/PROVIDERS-CSV-FORMAT.md` and on the import page.
+2. Upload the file and click **Check file**. Every row is validated (provider type, email, cities, plans, office hours, links…) and problems are listed by row number. Nothing is saved yet.
+3. Click **Import**. Valid rows are saved; rows with errors are skipped. The sitemap is regenerated and search engines are notified.
+
+Good to know:
+- One row per doctor. A doctor with several offices = several rows with the same `slug`.
+- Existing doctors are matched by `slug`, then `email`, and updated; empty cells never erase data. **Export all providers → edit → import** is the easiest bulk-edit workflow (the export uses the same format).
+- Options: create missing conditions/treatments/insurances, create missing cities (needs lat/lng), and turn updating of existing doctors on/off.
+- Up to 15 MB per file (tens of thousands of doctors); split larger files.
+
+---
+
 ## 3. What's included
 
 ### Public website (all with SEO meta tags, keywords, Open Graph / Twitter cards, JSON-LD, sitemap.xml, robots.txt)
@@ -103,6 +119,7 @@ npm start              # or run behind PM2 / systemd / Docker
 Overview (profile views, website/call clicks, email inquiries, chart, top searched conditions, recent leads, profile completeness), Profile, Locations (map pin picker), Photos & Media, **Videos & Social** (intro video, video gallery from YouTube/Vimeo links or uploaded MP4s, social network links), FAQs, Availability (office hours → appointment slots), Appointments, Messages, Reviews, Analytics, Billing & Plan, Settings. Features unlock according to the plan (see below). Claims waiting for verification see a “being verified” screen.
 
 ### Admin panel (`/admin`, login at `/admin/login`)
+- **Import Providers (CSV)**: bulk import/update doctors with validation and row-by-row errors; template download and full export.
 - **My Account**: change your name, email, photo and password; link/unlink Google & Facebook sign-in.
 - **Sitemap & Indexing**: last regeneration time, URL/image counts, search-engine notification status.
 - **Dashboard & Analytics**: visitors, new vs returning, visits per visitor, pages, searches, devices, browsers, OS, visitor cities/countries, top pages, top provider profiles with every interaction (photo views, gallery, appointment, call, email, website), recent visitors.
@@ -133,7 +150,8 @@ All numbers and switches are editable per plan.
 ## 4. How things work (for developers)
 
 ```
-prisma/schema.prisma        Data model (MySQL). Money stored as integer cents.
+prisma/schema.prisma        Data model (PostgreSQL). Money stored as integer cents.
+prisma/migrations/          SQL migrations (initial migration included)
 prisma/seed.ts              Demo content
 prisma.config.ts            Prisma 7 config (DB URL, seed command)
 src/proxy.ts                Next 16 "proxy" (middleware): protects /admin & /dashboard, sets visitor cookie
@@ -149,13 +167,15 @@ src/lib/analytics.ts        Event recording and reports
 src/lib/sitemap.ts          Sitemap builder + auto-regeneration + IndexNow pings
 src/lib/oauth.ts            Admin Google / Facebook sign-in
 src/lib/video.ts            YouTube / Vimeo / MP4 link parsing
+src/lib/providers-csv*.ts   Provider CSV import / export (column spec + engine)
+docs/                       CSV template + CSV format guide for importing doctors
 src/lib/uploads.ts          File storage (providers/{id}/profile, providers/{id}/gallery, media/YYYY/MM)
 src/lib/payments/…          Stripe + PayPal + order fulfilment
 src/lib/actions/…           Server actions (forms)
 src/components/…            UI (site, profile, search, dashboard, admin, media library, editor)
 ```
 
-- **Add a new admin section**: add the model to `schema.prisma`, run `npm run db:push`, then add one entry to `src/lib/admin/resources.ts`. The list, search, filters, create/edit form, media picker and delete all work automatically.
+- **Add a new admin section**: add the model to `schema.prisma`, run `npm run db:migrate`, then add one entry to `src/lib/admin/resources.ts`. The list, search, filters, create/edit form, media picker and delete all work automatically.
 - **Suspense & skeletons**: every data section on public pages and dashboards is an async Server Component wrapped in `<Suspense>` with a matching skeleton (`src/components/ui/Skeleton.tsx`); route-level `loading.tsx` files cover full-page loads.
 - **Uploads**: files are served by `src/app/uploads/[...path]/route.ts` because Next.js does not serve files added to `/public` after a build. Images are converted to WebP (max 2000 px) with `sharp`.
 - **Maps** use Leaflet + OpenStreetMap (no API key). Swap the tile URL in `src/components/site/map/*` for Mapbox/Google tiles if you prefer.

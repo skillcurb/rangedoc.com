@@ -9,14 +9,14 @@ import { usePathname } from "next/navigation";
 import {
   BarChart3, Bell, BookOpen, Building2, CalendarCheck, ChevronDown, CreditCard, ExternalLink, FileText, FolderOpen, HelpCircle, Home, Image as ImageIcon,
   Inbox, LayoutGrid, LogOut, Mail, MapPin, Menu, MessageSquare, Package, Search, Settings, ShieldCheck, ShoppingBag, Sparkles, Star, Stethoscope, Tag, Tags,
-  UserCheck, UserRound, Users, X, Clock, Layers, Globe, Film, KeyRound, type LucideIcon,
+  UserCheck, UserRound, Users, X, Clock, Layers, Globe, Film, KeyRound, Upload, type LucideIcon,
 } from "lucide-react";
 import { Logo } from "@/components/site/Logo";
 import { cn, initials } from "@/lib/utils";
 
 const ICONS: Record<string, LucideIcon> = {
   Home, UserRound, MapPin, Stethoscope, ShieldCheck, ImageIcon, Inbox, BarChart3, CreditCard, Settings, HelpCircle, CalendarCheck, Mail, Star, Clock,
-  Users, UserCheck, Building2, FileText, BookOpen, Tag, Tags, Package, ShoppingBag, FolderOpen, MessageSquare, Search, Sparkles, LayoutGrid, Layers, Globe, Film, KeyRound,
+  Users, UserCheck, Building2, FileText, BookOpen, Tag, Tags, Package, ShoppingBag, FolderOpen, MessageSquare, Search, Sparkles, LayoutGrid, Layers, Globe, Film, KeyRound, Upload,
 };
 
 export type NavItem = { label: string; href: string; icon: string; badge?: number; locked?: boolean };

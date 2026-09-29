@@ -41,7 +41,7 @@ async function ProductGrid({ sp }: { sp: SP }) {
   if (types.length) where.productType = { in: types };
   if (sp.brand) where.brand = sp.brand;
   const uses = splitList(sp.use);
-  if (uses.length) where.OR = uses.map((u) => ({ useCases: { contains: u } }));
+  if (uses.length) where.OR = uses.map((u) => ({ useCases: { contains: u, mode: "insensitive" as const } }));
   if (sp.price) {
     const [min, max] = sp.price.split("-").map((x) => (x ? Number(x) : undefined));
     where.priceCents = { ...(min != null ? { gte: min } : {}), ...(max != null ? { lt: max } : {}) };

@@ -7,7 +7,6 @@
 import "dotenv/config";
 import { defineConfig, env } from "prisma/config";
 
-
 export default defineConfig({
   // Where the data model lives
   schema: "prisma/schema.prisma",
@@ -17,7 +16,7 @@ export default defineConfig({
     seed: "tsx prisma/seed.ts",
   },
   datasource: {
-    // MySQL connection string from .env
+    // PostgreSQL connection string from .env
     url: env("DATABASE_URL"),
   },
 });

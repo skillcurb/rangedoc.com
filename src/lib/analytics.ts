@@ -174,13 +174,15 @@ export async function countByType(from: Date, to: Date, providerId?: number) {
 /** Daily counts for a chart: [{ date: "2026-09-01", EVENT: n, … }] */
 export async function dailySeries(types: EventType[], days: number, providerId?: number) {
   const from = rangeStart(days);
+  // PostgreSQL: quoted identifiers keep Prisma's camelCase column names;
+  // the enum column is cast to text so it can be compared with the parameters.
   const rows = await prisma.$queryRaw<{ d: Date | string; t: string; c: bigint | number }[]>(Prisma.sql`
-    SELECT DATE(createdAt) AS d, type AS t, COUNT(*) AS c
-    FROM AnalyticsEvent
-    WHERE createdAt >= ${from}
-      AND type IN (${Prisma.join(types)})
-      ${providerId ? Prisma.sql`AND providerId = ${providerId}` : Prisma.empty}
-    GROUP BY DATE(createdAt), type
+    SELECT DATE("createdAt") AS d, "type"::text AS t, COUNT(*) AS c
+    FROM "AnalyticsEvent"
+    WHERE "createdAt" >= ${from}
+      AND "type"::text IN (${Prisma.join(types)})
+      ${providerId ? Prisma.sql`AND "providerId" = ${providerId}` : Prisma.empty}
+    GROUP BY DATE("createdAt"), "type"
   `);
   const map = new Map<string, Record<string, number | string>>();
   for (let i = 0; i < days; i++) {

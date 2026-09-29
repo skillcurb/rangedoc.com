@@ -8,4 +8,3 @@ out
 !/storage/uploads/.gitkeep
 *.tsbuildinfo
 next-env.d.ts
-*.zip

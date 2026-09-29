@@ -13,7 +13,7 @@ export default async function BlogPage({ searchParams }: { searchParams: Promise
     <BlogListing
       title="Helpful Resources"
       subtitle="Practical guides from licensed providers to help you understand your pain and recover faster."
-      where={{ published: true, ...(q ? { OR: [{ title: { contains: q } }, { excerpt: { contains: q } }] } : {}) }}
+      where={{ published: true, ...(q ? { OR: [{ title: { contains: q, mode: "insensitive" as const } }, { excerpt: { contains: q, mode: "insensitive" as const } }] } : {}) }}
       page={Math.max(1, Number(page) || 1)}
       basePath="/blog"
       q={q}

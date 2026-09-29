@@ -10,7 +10,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   // Native Node packages that must not be bundled
-  serverExternalPackages: ["@prisma/adapter-mariadb", "mariadb", "sharp", "nodemailer"],
+  serverExternalPackages: ["@prisma/adapter-pg", "pg", "sharp", "nodemailer"],
   images: {
     formats: ["image/avif", "image/webp"],
     qualities: [60, 75, 90],

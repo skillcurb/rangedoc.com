@@ -102,11 +102,20 @@ export function CheckboxGroup({ name, options, selected, columns = 3 }: { name: 
   );
 }
 
-export function Toggle({ name, defaultChecked, label, help }: { name: string; defaultChecked?: boolean; label: string; help?: string }) {
+export function Toggle({ name, defaultChecked, label, help, onChange }: { name: string; defaultChecked?: boolean; label: string; help?: string; onChange?: (checked: boolean) => void }) {
   const [on, setOn] = useState(!!defaultChecked);
   return (
     <label className="flex cursor-pointer items-start gap-3">
-      <input type="checkbox" name={name} checked={on} onChange={(e) => setOn(e.target.checked)} className="peer sr-only" />
+      <input
+        type="checkbox"
+        name={name}
+        checked={on}
+        onChange={(e) => {
+          setOn(e.target.checked);
+          onChange?.(e.target.checked);
+        }}
+        className="peer sr-only"
+      />
       <span className={cn("mt-0.5 flex h-6 w-11 shrink-0 items-center rounded-full p-0.5 transition", on ? "bg-brand-600" : "bg-navy-200")}>
         <span className={cn("size-5 rounded-full bg-white shadow transition", on && "translate-x-5")} />
       </span>

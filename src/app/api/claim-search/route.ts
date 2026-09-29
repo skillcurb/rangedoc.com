@@ -17,8 +17,8 @@ export async function GET(request: NextRequest) {
       AND: [
         {
           OR: [
-            { practiceName: { contains: q } },
-            ...words.map((w) => ({ OR: [{ firstName: { contains: w } }, { lastName: { contains: w } }, { practiceName: { contains: w } }] })),
+            { practiceName: { contains: q, mode: "insensitive" as const } },
+            ...words.map((w) => ({ OR: [{ firstName: { contains: w, mode: "insensitive" as const } }, { lastName: { contains: w, mode: "insensitive" as const } }, { practiceName: { contains: w, mode: "insensitive" as const } }] })),
           ],
         },
       ],
