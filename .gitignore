@@ -1,0 +1,11 @@
+node_modules
+.next
+out
+.env
+.env.local
+/src/generated
+/storage/uploads/*
+!/storage/uploads/.gitkeep
+*.tsbuildinfo
+next-env.d.ts
+*.zip

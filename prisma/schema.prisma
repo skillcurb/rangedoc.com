@@ -1,0 +1,776 @@
+// =====================================================================
+//  RangeDoc – Prisma data model (MySQL)
+// ---------------------------------------------------------------------
+//  Prisma 7: the connection URL lives in prisma.config.ts, and the
+//  generated client is written to src/generated/prisma (imported via
+//  "@/generated/prisma/client").
+//
+//  Money is stored as integer cents (priceCents) so there are no
+//  floating point rounding errors and values serialise cleanly.
+// =====================================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+// ─────────────────────────────── Enums ───────────────────────────────
+
+enum Role {
+  ADMIN
+  PROVIDER
+}
+
+enum ProviderType {
+  PHYSICAL_THERAPIST
+  CHIROPRACTOR
+}
+
+/// UNCLAIMED = listed by us (free, lowest search priority)
+/// PENDING   = someone registered to claim it; admin must verify
+/// CLAIMED   = verified owner controls the profile
+enum ClaimStatus {
+  UNCLAIMED
+  PENDING
+  CLAIMED
+}
+
+enum ProviderStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ModerationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AppointmentStatus {
+  NEW
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  PROCESSING
+  SHIPPED
+  COMPLETED
+  CANCELLED
+  REFUNDED
+  FAILED
+}
+
+enum PlanInterval {
+  MONTH
+  YEAR
+  LIFETIME
+}
+
+/// Every trackable visitor interaction
+enum EventType {
+  PAGE_VIEW
+  SEARCH
+  SEARCH_IMPRESSION
+  SEARCH_CLICK
+  PROFILE_VIEW
+  APPOINTMENT_CLICK
+  APPOINTMENT_SUBMIT
+  CALL_CLICK
+  EMAIL_CLICK
+  EMAIL_SUBMIT
+  WEBSITE_CLICK
+  GALLERY_VIEW
+  PHOTO_VIEW
+  SHARE_CLICK
+  SAVE_CLICK
+  DIRECTIONS_CLICK
+  PRODUCT_VIEW
+  ADD_TO_CART
+  BLOG_VIEW
+}
+
+// ─────────────────────────────── Users ───────────────────────────────
+
+model User {
+  id                Int       @id @default(autoincrement())
+  name              String
+  email             String    @unique
+  passwordHash      String
+  role              Role      @default(PROVIDER)
+  avatar            String?
+  /// A provider account manages exactly one provider profile
+  providerId        Int?      @unique
+  provider          Provider? @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  /// Social login ids (admin "Sign in with Google / Facebook")
+  googleId          String?   @unique
+  facebookId        String?   @unique
+  resetToken        String?   @unique
+  resetTokenExpires DateTime?
+  lastLoginAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  media             Media[]
+}
+
+// ───────────────────────────── Providers ─────────────────────────────
+
+model Provider {
+  id                   Int            @id @default(autoincrement())
+  slug                 String         @unique
+  prefix               String?        @db.VarChar(20) // "Dr."
+  firstName            String
+  lastName             String
+  credentials          String?        @db.VarChar(80) // "PT, DPT"
+  providerType         ProviderType
+  headline             String?        @db.VarChar(160) // "Physical Therapist"
+  practiceName         String?
+  bio                  String?        @db.Text
+  quote                String?        @db.VarChar(500)
+  bestMatch            String?        @db.Text // "Best match for you" paragraph
+  bestMatchPoints      String?        @db.Text // one bullet per line
+  photo                String?
+  videoUrl             String? // intro video (paid plans)
+  // Social network links (paid plans)
+  facebookUrl          String?
+  xUrl                 String?
+  linkedinUrl          String?
+  pinterestUrl         String?
+  youtubeUrl           String?
+  instagramUrl         String?
+  gender               String?        @db.VarChar(30)
+  languages            String?        @db.VarChar(255) // comma separated
+  education            String?
+  yearsExperience      Int?
+  licenseNumber        String?        @db.VarChar(80)
+  licenseState         String?        @db.VarChar(40)
+  licenseVerified      Boolean        @default(false)
+  claimStatus          ClaimStatus    @default(UNCLAIMED)
+  claimNote            String?        @db.Text
+  claimedAt            DateTime?
+  status               ProviderStatus @default(ACTIVE)
+  phone                String?        @db.VarChar(40)
+  email                String?
+  website              String?
+  acceptingNewPatients Boolean        @default(true)
+  inPerson             Boolean        @default(true)
+  telehealth           Boolean        @default(false)
+  responseTime         String?        @db.VarChar(120)
+  /// { mon: { open: "08:00", close: "18:00", closed: false }, ... }
+  officeHours          Json?
+  slotMinutes          Int            @default(30)
+  /// Rating the provider chooses to display (paid plans), e.g. their Google rating
+  displayRating        Float?
+  displayReviewCount   Int?
+  ratingSource         String?        @db.VarChar(60)
+  endorsement          String?        @db.VarChar(255) // "Recommended by 12+ referring physicians"
+  featured             Boolean        @default(false) // shown in "Featured Providers" on home
+  featuredOrder        Int            @default(0)
+  planId               Int?
+  plan                 Plan?          @relation(fields: [planId], references: [id], onDelete: SetNull)
+  planExpiresAt        DateTime?
+  cityId               Int?
+  city                 City?          @relation(fields: [cityId], references: [id], onDelete: SetNull)
+  // SEO
+  metaTitle            String?        @db.VarChar(255)
+  metaDescription      String?        @db.VarChar(500)
+  metaKeywords         String?        @db.VarChar(500)
+  ogImage              String?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  conditions   Condition[]
+  specialties  Specialty[]
+  insurances   Insurance[]
+  locations    ProviderLocation[]
+  gallery      GalleryImage[]
+  videos       ProviderVideo[]
+  faqs         ProviderFaq[]
+  reviews      Review[]
+  appointments AppointmentRequest[]
+  messages     ProviderMessage[]
+  events       AnalyticsEvent[]
+  planOrders   PlanOrder[]
+  media        Media[]
+  user         User?
+
+  @@index([providerType])
+  @@index([cityId])
+  @@index([claimStatus])
+  @@index([featured])
+}
+
+model ProviderLocation {
+  id         Int      @id @default(autoincrement())
+  providerId Int
+  provider   Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  name       String // "MotionNear Austin"
+  address    String
+  address2   String?
+  cityId     Int?
+  city       City?    @relation(fields: [cityId], references: [id], onDelete: SetNull)
+  cityName   String
+  state      String   @db.VarChar(40)
+  zip        String   @db.VarChar(20)
+  lat        Float
+  lng        Float
+  phone      String?  @db.VarChar(40)
+  isPrimary  Boolean  @default(false)
+  sortOrder  Int      @default(0)
+
+  @@index([providerId])
+  @@index([lat, lng])
+}
+
+model GalleryImage {
+  id         Int      @id @default(autoincrement())
+  providerId Int
+  provider   Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  url        String
+  alt        String?
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([providerId])
+}
+
+/// Video gallery (paid plans) – YouTube/Vimeo links or uploaded MP4/WebM files
+model ProviderVideo {
+  id         Int      @id @default(autoincrement())
+  providerId Int
+  provider   Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  title      String
+  url        String
+  thumbnail  String?
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([providerId])
+}
+
+model ProviderFaq {
+  id         Int      @id @default(autoincrement())
+  providerId Int
+  provider   Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  question   String   @db.VarChar(500)
+  answer     String   @db.Text
+  sortOrder  Int      @default(0)
+
+  @@index([providerId])
+}
+
+model Review {
+  id          Int              @id @default(autoincrement())
+  providerId  Int
+  provider    Provider         @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  authorName  String
+  authorEmail String?
+  rating      Int
+  title       String?
+  body        String           @db.Text
+  status      ModerationStatus @default(PENDING)
+  visitorId   String?          @db.VarChar(64)
+  createdAt   DateTime         @default(now())
+
+  @@index([providerId, status])
+}
+
+model AppointmentRequest {
+  id              Int               @id @default(autoincrement())
+  providerId      Int
+  provider        Provider          @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  locationId      Int?
+  date            DateTime          @db.Date
+  timeSlot        String            @db.VarChar(20) // "09:30"
+  firstName       String
+  lastName        String
+  email           String
+  phone           String            @db.VarChar(40)
+  dateOfBirth     String?           @db.VarChar(20)
+  isNewPatient    Boolean           @default(true)
+  insurance       String?
+  reason          String?           @db.Text
+  preferredContact String?          @db.VarChar(20)
+  status          AppointmentStatus @default(NEW)
+  providerNote    String?           @db.Text
+  visitorId       String?           @db.VarChar(64)
+  createdAt       DateTime          @default(now())
+
+  @@index([providerId, date])
+}
+
+/// "Email provider" messages – shown in the provider dashboard inbox
+model ProviderMessage {
+  id         Int      @id @default(autoincrement())
+  providerId Int
+  provider   Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  name       String
+  contact    String // email or phone typed by the visitor
+  subject    String
+  message    String   @db.Text
+  read       Boolean  @default(false)
+  visitorId  String?  @db.VarChar(64)
+  createdAt  DateTime @default(now())
+
+  @@index([providerId, createdAt])
+}
+
+// ──────────────────────── Plans / claim pricing ──────────────────────
+
+model Plan {
+  id                 Int          @id @default(autoincrement())
+  name               String
+  slug               String       @unique
+  tagline            String?
+  priceCents         Int          @default(0)
+  interval           PlanInterval @default(MONTH)
+  isFree             Boolean      @default(false)
+  isPopular          Boolean      @default(false)
+  badge              String?      @db.VarChar(40)
+  priceNote          String?      @db.VarChar(60) // "Always free" / "Cancel anytime"
+  ctaLabel           String?      @db.VarChar(60)
+  /// Feature bullet list shown on the pricing card (string[])
+  features           Json?
+  // ---- Capabilities unlocked by this plan ----
+  maxPhotos          Int          @default(4)
+  maxLocations       Int          @default(1)
+  maxFaqs            Int          @default(3)
+  allowReviews       Boolean      @default(false) // visitors can post reviews / reviews shown
+  allowShareSave     Boolean      @default(false) // share + save buttons on profile
+  allowRatingDisplay Boolean      @default(false) // provider-set rating is shown
+  allowVideo         Boolean      @default(false) // intro video
+  maxVideos          Int          @default(0)     // video gallery size
+  allowSocialLinks   Boolean      @default(false) // Facebook, X, LinkedIn, Pinterest, YouTube…
+  allowAnalytics     Boolean      @default(false) // full analytics in dashboard
+  allowAllFaqs       Boolean      @default(false) // "View all FAQs"
+  featuredBadge      Boolean      @default(false)
+  /// Higher = shown earlier in search results among paid providers
+  searchPriority     Int          @default(0)
+  active             Boolean      @default(true)
+  sortOrder          Int          @default(0)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+  providers          Provider[]
+  orders             PlanOrder[]
+}
+
+model PlanOrder {
+  id             Int         @id @default(autoincrement())
+  orderNumber    String      @unique
+  providerId     Int?
+  provider       Provider?   @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  userId         Int?
+  planId         Int
+  plan           Plan        @relation(fields: [planId], references: [id])
+  amountCents    Int
+  currency       String      @default("USD") @db.VarChar(8)
+  status         OrderStatus @default(PENDING)
+  paymentMethod  String      @db.VarChar(30)
+  paymentRef     String?
+  billingName    String
+  billingEmail   String
+  billingPhone   String?     @db.VarChar(40)
+  billingAddress String?
+  paidAt         DateTime?
+  createdAt      DateTime    @default(now())
+}
+
+// ─────────────────────── Taxonomy / directory ────────────────────────
+
+model City {
+  id              Int                @id @default(autoincrement())
+  name            String
+  state           String
+  stateCode       String             @db.VarChar(10)
+  slug            String             @unique
+  lat             Float
+  lng             Float
+  zipCodes        String?            @db.Text // comma separated
+  image           String?
+  description     String?            @db.Text
+  featured        Boolean            @default(false) // "Find Care Near You" on home
+  sortOrder       Int                @default(0)
+  active          Boolean            @default(true)
+  metaTitle       String?            @db.VarChar(255)
+  metaDescription String?            @db.VarChar(500)
+  metaKeywords    String?            @db.VarChar(500)
+  ogImage         String?
+  providers       Provider[]
+  locations       ProviderLocation[]
+}
+
+/// Pain areas / conditions ("Where does it hurt?")
+model Condition {
+  id              Int        @id @default(autoincrement())
+  name            String
+  slug            String     @unique
+  shortName       String?    @db.VarChar(60)
+  description     String?    @db.Text
+  image           String?
+  keywords        String?    @db.Text // extra search synonyms, comma separated
+  showOnHome      Boolean    @default(true)
+  sortOrder       Int        @default(0)
+  active          Boolean    @default(true)
+  metaTitle       String?    @db.VarChar(255)
+  metaDescription String?    @db.VarChar(500)
+  metaKeywords    String?    @db.VarChar(500)
+  ogImage         String?
+  providers       Provider[]
+  popularSearches PopularSearch[]
+}
+
+/// Treatments / specialties (Manual Therapy, Sports Rehab…)
+model Specialty {
+  id              Int             @id @default(autoincrement())
+  name            String
+  slug            String          @unique
+  description     String?         @db.Text
+  sortOrder       Int             @default(0)
+  providers       Provider[]
+  popularSearches PopularSearch[]
+}
+
+model Insurance {
+  id        Int        @id @default(autoincrement())
+  name      String
+  slug      String     @unique
+  logo      String?
+  sortOrder Int        @default(0)
+  providers Provider[]
+}
+
+/// "Popular ways to find care" chips on the home page
+model PopularSearch {
+  id           Int           @id @default(autoincrement())
+  label        String
+  providerType ProviderType?
+  conditionId  Int?
+  condition    Condition?    @relation(fields: [conditionId], references: [id], onDelete: SetNull)
+  specialtyId  Int?
+  specialty    Specialty?    @relation(fields: [specialtyId], references: [id], onDelete: SetNull)
+  query        String?
+  sortOrder    Int           @default(0)
+  active       Boolean       @default(true)
+}
+
+/// Small admin-editable content items grouped by `section`
+/// (home stats, hero badges, claim steps, why-claim items, product tips…)
+model ContentBlock {
+  id        Int     @id @default(autoincrement())
+  section   String  @db.VarChar(60)
+  icon      String? @db.VarChar(60) // lucide icon name, e.g. "ShieldCheck"
+  title     String
+  text      String? @db.Text
+  link      String?
+  sortOrder Int     @default(0)
+  active    Boolean @default(true)
+
+  @@index([section])
+}
+
+model Testimonial {
+  id        Int     @id @default(autoincrement())
+  name      String
+  role      String?
+  location  String?
+  avatar    String?
+  quote     String  @db.Text
+  rating    Int     @default(5)
+  page      String  @default("claim") @db.VarChar(40)
+  sortOrder Int     @default(0)
+  active    Boolean @default(true)
+}
+
+// ─────────────────────────────── Blog ────────────────────────────────
+
+model BlogCategory {
+  id              Int        @id @default(autoincrement())
+  name            String
+  slug            String     @unique
+  description     String?    @db.Text
+  metaTitle       String?    @db.VarChar(255)
+  metaDescription String?    @db.VarChar(500)
+  metaKeywords    String?    @db.VarChar(500)
+  ogImage         String?
+  posts           BlogPost[]
+}
+
+model BlogTag {
+  id    Int        @id @default(autoincrement())
+  name  String
+  slug  String     @unique
+  posts BlogPost[]
+}
+
+model BlogPost {
+  id              Int           @id @default(autoincrement())
+  title           String
+  slug            String        @unique
+  excerpt         String?       @db.Text
+  content         String        @db.LongText // HTML from the rich-text editor
+  coverImage      String?
+  coverAlt        String?
+  authorName      String?
+  authorAvatar    String?
+  categoryId      Int?
+  category        BlogCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  tags            BlogTag[]
+  published       Boolean       @default(false)
+  publishedAt     DateTime?
+  featured        Boolean       @default(false) // "Helpful resources" on home
+  readingMinutes  Int?
+  views           Int           @default(0)
+  ratingSum       Int           @default(0)
+  ratingCount     Int           @default(0)
+  metaTitle       String?       @db.VarChar(255)
+  metaDescription String?       @db.VarChar(500)
+  metaKeywords    String?       @db.VarChar(500)
+  ogImage         String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  comments        BlogComment[]
+  ratings         BlogRating[]
+
+  @@index([published, publishedAt])
+}
+
+model BlogComment {
+  id        Int              @id @default(autoincrement())
+  postId    Int
+  post      BlogPost         @relation(fields: [postId], references: [id], onDelete: Cascade)
+  name      String
+  email     String
+  body      String           @db.Text
+  status    ModerationStatus @default(PENDING)
+  createdAt DateTime         @default(now())
+
+  @@index([postId, status])
+}
+
+model BlogRating {
+  id        Int      @id @default(autoincrement())
+  postId    Int
+  post      BlogPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  visitorId String   @db.VarChar(64)
+  rating    Int
+  createdAt DateTime @default(now())
+
+  @@unique([postId, visitorId])
+}
+
+// ───────────────────────────── Products ──────────────────────────────
+
+/// Product categories = pain areas in the Recovery Marketplace
+model ProductCategory {
+  id              Int       @id @default(autoincrement())
+  name            String
+  slug            String    @unique
+  icon            String?   @db.VarChar(60)
+  description     String?   @db.Text
+  sortOrder       Int       @default(0)
+  metaTitle       String?   @db.VarChar(255)
+  metaDescription String?   @db.VarChar(500)
+  metaKeywords    String?   @db.VarChar(500)
+  ogImage         String?
+  products        Product[]
+}
+
+model Product {
+  id               Int              @id @default(autoincrement())
+  name             String
+  slug             String           @unique
+  shortDescription String?          @db.VarChar(500)
+  description      String?          @db.LongText
+  priceCents       Int
+  compareAtCents   Int?
+  image            String?
+  /// Extra gallery image URLs (string[])
+  images           Json?
+  sku              String?          @db.VarChar(80)
+  stock            Int?
+  brand            String?
+  productType      String?          @db.VarChar(80)
+  useCases         String?          @db.VarChar(255) // comma separated
+  categoryId       Int?
+  category         ProductCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  active           Boolean          @default(true)
+  featured         Boolean          @default(false)
+  sortOrder        Int              @default(0)
+  metaTitle        String?          @db.VarChar(255)
+  metaDescription  String?          @db.VarChar(500)
+  metaKeywords     String?          @db.VarChar(500)
+  ogImage          String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  orderItems       OrderItem[]
+}
+
+model Order {
+  id            Int         @id @default(autoincrement())
+  orderNumber   String      @unique
+  customerName  String
+  email         String
+  phone         String?     @db.VarChar(40)
+  address1      String
+  address2      String?
+  city          String
+  state         String
+  zip           String      @db.VarChar(20)
+  country       String      @default("US")
+  notes         String?     @db.Text
+  subtotalCents Int
+  shippingCents Int         @default(0)
+  taxCents      Int         @default(0)
+  totalCents    Int
+  currency      String      @default("USD") @db.VarChar(8)
+  status        OrderStatus @default(PENDING)
+  paymentMethod String      @db.VarChar(30)
+  paymentRef    String?
+  paidAt        DateTime?
+  createdAt     DateTime    @default(now())
+  items         OrderItem[]
+}
+
+model OrderItem {
+  id         Int      @id @default(autoincrement())
+  orderId    Int
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId  Int?
+  product    Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  name       String
+  image      String?
+  priceCents Int
+  quantity   Int
+}
+
+// ─────────────────────────── Analytics ───────────────────────────────
+
+model Visitor {
+  id            String           @id @db.VarChar(64) // random id kept in a cookie
+  firstSeenAt   DateTime         @default(now())
+  lastSeenAt    DateTime         @default(now())
+  visitCount    Int              @default(1) // number of sessions
+  pageViews     Int              @default(0)
+  lastSessionId String?          @db.VarChar(64)
+  device        String?          @db.VarChar(30)
+  browser       String?          @db.VarChar(60)
+  os            String?          @db.VarChar(60)
+  country       String?          @db.VarChar(80)
+  region        String?          @db.VarChar(80)
+  city          String?          @db.VarChar(120)
+  lat           Float?
+  lng           Float?
+  referrer      String?          @db.VarChar(500)
+  events        AnalyticsEvent[]
+
+  @@index([lastSeenAt])
+}
+
+model AnalyticsEvent {
+  id         Int       @id @default(autoincrement())
+  type       EventType
+  visitorId  String?   @db.VarChar(64)
+  visitor    Visitor?  @relation(fields: [visitorId], references: [id], onDelete: SetNull)
+  sessionId  String?   @db.VarChar(64)
+  providerId Int?
+  provider   Provider? @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  path       String?   @db.VarChar(500)
+  referrer   String?   @db.VarChar(500)
+  device     String?   @db.VarChar(30)
+  browser    String?   @db.VarChar(60)
+  os         String?   @db.VarChar(60)
+  country    String?   @db.VarChar(80)
+  city       String?   @db.VarChar(120)
+  /// Extra details, e.g. { "condition": "back-pain", "imageId": 12 }
+  meta       Json?
+  createdAt  DateTime  @default(now())
+
+  @@index([type, createdAt])
+  @@index([providerId, type, createdAt])
+  @@index([visitorId])
+  @@index([createdAt])
+}
+
+// ────────────────────────── CMS / SEO / Media ────────────────────────
+
+/// WordPress-style media library entry
+model Media {
+  id           Int       @id @default(autoincrement())
+  filename     String
+  originalName String
+  url          String // public URL, e.g. /uploads/media/2026/09/x.webp
+  path         String // path relative to UPLOAD_DIR
+  mimeType     String    @db.VarChar(120)
+  size         Int
+  width        Int?
+  height       Int?
+  alt          String?
+  title        String?
+  folder       String    @default("media") // "media/2026/09", "providers/5/gallery"
+  uploadedById Int?
+  uploadedBy   User?     @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+  providerId   Int?
+  provider     Provider? @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  createdAt    DateTime  @default(now())
+
+  @@index([folder])
+  @@index([mimeType])
+}
+
+/// SEO settings for fixed pages (home, search, claim, products, blog…)
+model PageSeo {
+  id              Int     @id @default(autoincrement())
+  pageKey         String  @unique @db.VarChar(60)
+  label           String
+  metaTitle       String? @db.VarChar(255)
+  metaDescription String? @db.VarChar(500)
+  metaKeywords    String? @db.VarChar(500)
+  ogTitle         String? @db.VarChar(255)
+  ogDescription   String? @db.VarChar(500)
+  ogImage         String?
+  canonical       String?
+  noIndex         Boolean @default(false)
+}
+
+/// Free-form content pages (About, Privacy, Terms, Help…) served at /{slug}
+model CmsPage {
+  id              Int      @id @default(autoincrement())
+  title           String
+  slug            String   @unique
+  excerpt         String?  @db.Text
+  content         String   @db.LongText
+  heroImage       String?
+  published       Boolean  @default(true)
+  footerGroup     String?  @db.VarChar(40) // "company", "providers" – shows the link in that footer column
+  sortOrder       Int      @default(0)
+  metaTitle       String?  @db.VarChar(255)
+  metaDescription String?  @db.VarChar(500)
+  metaKeywords    String?  @db.VarChar(500)
+  ogImage         String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model ContactMessage {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String
+  phone     String?  @db.VarChar(40)
+  subject   String
+  message   String   @db.Text
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+/// Key/value site settings (branding, contact, social, payments, SMTP, captcha…)
+model Setting {
+  key   String @id @db.VarChar(80)
+  value Json
+}
