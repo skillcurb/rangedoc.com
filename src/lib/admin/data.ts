@@ -27,8 +27,8 @@ export const PAGE_SIZE = 25;
 
 export async function listRecords(res: ResourceDef, opts: { q?: string; page?: number; filters?: Record<string, string> }) {
   const where: Record<string, unknown> = {};
-  // PostgreSQL text comparison is case-sensitive, so search with mode "insensitive"
-  if (opts.q) where.OR = res.searchFields.map((f) => ({ [f]: { contains: opts.q, mode: "insensitive" } }));
+  // MySQL default collation (utf8mb4_unicode_ci) is case-insensitive, so plain "contains" works
+  if (opts.q) where.OR = res.searchFields.map((f) => ({ [f]: { contains: opts.q } }));
   for (const f of res.filters ?? []) {
     const v = opts.filters?.[f.field];
     if (v) where[f.field] = v;

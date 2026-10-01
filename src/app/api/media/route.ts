@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
   const where: Prisma.MediaWhereInput = {
     ...(who.providerId ? { providerId: who.providerId } : {}),
     ...(type === "image" ? { mimeType: { startsWith: "image/" } } : type === "video" ? { mimeType: { startsWith: "video/" } } : type === "pdf" ? { mimeType: "application/pdf" } : {}),
-    ...(q ? { OR: [{ originalName: { contains: q, mode: "insensitive" as const } }, { alt: { contains: q, mode: "insensitive" as const } }, { title: { contains: q, mode: "insensitive" as const } }] } : {}),
+    ...(q ? { OR: [{ originalName: { contains: q } }, { alt: { contains: q } }, { title: { contains: q } }] } : {}),
   };
   const [total, items] = await Promise.all([
     prisma.media.count({ where }),

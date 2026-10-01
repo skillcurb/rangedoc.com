@@ -16,7 +16,7 @@ export default defineConfig({
     seed: "tsx prisma/seed.ts",
   },
   datasource: {
-    // PostgreSQL connection string from .env
+    // MySQL connection string from .env
     url: env("DATABASE_URL"),
   },
 });

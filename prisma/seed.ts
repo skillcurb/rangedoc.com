@@ -11,10 +11,10 @@
  */
 import "dotenv/config";
 import bcrypt from "bcryptjs";
-import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaMariaDb } from "@prisma/adapter-mariadb";
 import { PrismaClient, type ProviderType, type Condition, type Specialty, type City, type Insurance } from "../src/generated/prisma/client";
 
-const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL! }) });
+const prisma = new PrismaClient({ adapter: new PrismaMariaDb(process.env.DATABASE_URL!) });
 
 const slug = (s: string) => s.toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
@@ -68,7 +68,7 @@ async function clear() {
   await prisma.cmsPage.deleteMany();
   await prisma.pageSeo.deleteMany();
 
-  // PostgreSQL keeps counting IDs after rows are deleted – restart the counters
+  // MySQL keeps counting AUTO_INCREMENT IDs after rows are deleted – restart the counters
   // of the emptied tables so a fresh seed starts at id 1 again.
   const tables = [
     "AnalyticsEvent", "OrderItem", "Order", "Product", "ProductCategory", "BlogRating", "BlogComment", "BlogPost", "BlogTag", "BlogCategory",
@@ -76,7 +76,8 @@ async function clear() {
     "PopularSearch", "Condition", "Specialty", "Insurance", "City", "Plan", "ContentBlock", "Testimonial", "CmsPage", "PageSeo",
   ];
   for (const t of tables) {
-    await prisma.$executeRawUnsafe(`SELECT setval(pg_get_serial_sequence('"${t}"', 'id'), COALESCE((SELECT MAX(id) FROM "${t}"), 0) + 1, false)`);
+    // On an empty table MySQL resets the counter to 1 (or MAX(id)+1 if rows remain)
+    await prisma.$executeRawUnsafe(`ALTER TABLE \`${t}\` AUTO_INCREMENT = 1`);
   }
 }
 

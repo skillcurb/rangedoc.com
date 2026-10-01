@@ -202,7 +202,7 @@ async function analyzeInternal(csvText: string, opts: ImportOptions) {
   const slugs = [...new Set(rows.map((r) => r.slug?.toLowerCase()).filter(Boolean))] as string[];
   const emails = [...new Set(rows.map((r) => r.email?.toLowerCase()).filter(Boolean))] as string[];
   const existing = await prisma.provider.findMany({
-    where: { OR: [{ slug: { in: slugs } }, { email: { in: emails, mode: "insensitive" } }] },
+    where: { OR: [{ slug: { in: slugs } }, { email: { in: emails } }] },
     select: { id: true, slug: true, email: true },
   });
   const existingBySlug = new Map(existing.map((e) => [e.slug.toLowerCase(), e]));

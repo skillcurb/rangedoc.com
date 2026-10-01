@@ -5,7 +5,7 @@
  *
  * How it works:
  *  1. Resolve the search centre (visitor lat/lng, or the chosen city).
- *  2. Ask PostgreSQL for candidate providers inside a bounding box around the
+ *  2. Ask MySQL for candidate providers inside a bounding box around the
  *     centre that match the text query (fast, uses the lat/lng index).
  *  3. In JavaScript: exact distance, sidebar filters, facet counts,
  *     ranking tier (paid → claimed free → unclaimed) and "match %".
@@ -175,16 +175,16 @@ export async function searchProviders(input: SearchInput): Promise<SearchOutput>
       .map((c) => c.id);
     const specIds = specs.filter((s) => q.includes(s.name.toLowerCase()) || s.name.toLowerCase().includes(q)).map((s) => s.id);
     where.OR = [
-      { firstName: { contains: input.q, mode: "insensitive" as const } },
-      { lastName: { contains: input.q, mode: "insensitive" as const } },
-      { practiceName: { contains: input.q, mode: "insensitive" as const } },
-      { headline: { contains: input.q, mode: "insensitive" as const } },
+      { firstName: { contains: input.q } },
+      { lastName: { contains: input.q } },
+      { practiceName: { contains: input.q } },
+      { headline: { contains: input.q } },
       ...(queryConditionIds.length ? [{ conditions: { some: { id: { in: queryConditionIds } } } }] : []),
       ...(specIds.length ? [{ specialties: { some: { id: { in: specIds } } } }] : []),
     ];
     // Whole name search, e.g. "Sarah Kim"
     const words = input.q!.split(/\s+/);
-    if (words.length >= 2) where.OR.push({ AND: [{ firstName: { contains: words[0], mode: "insensitive" as const } }, { lastName: { contains: words[words.length - 1], mode: "insensitive" as const } }] });
+    if (words.length >= 2) where.OR.push({ AND: [{ firstName: { contains: words[0] } }, { lastName: { contains: words[words.length - 1] } }] });
   }
 
   // Location pre-filter: bounding box big enough for the largest distance bucket

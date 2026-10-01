@@ -1,5 +1,5 @@
 // =====================================================================
-//  RangeDoc – Prisma data model (PostgreSQL)
+//  RangeDoc – Prisma data model (MySQL)
 // ---------------------------------------------------------------------
 //  Prisma 7: the connection URL lives in prisma.config.ts, and the
 //  generated client is written to src/generated/prisma (imported via
@@ -15,7 +15,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
 }
 
 // ─────────────────────────────── Enums ───────────────────────────────
@@ -514,7 +514,7 @@ model BlogPost {
   title           String
   slug            String        @unique
   excerpt         String?       @db.Text
-  content         String        @db.Text // HTML from the rich-text editor
+  content         String        @db.LongText // HTML from the rich-text editor
   coverImage      String?
   coverAlt        String?
   authorName      String?
@@ -745,7 +745,7 @@ model CmsPage {
   title           String
   slug            String   @unique
   excerpt         String?  @db.Text
-  content         String   @db.Text
+  content         String   @db.LongText
   heroImage       String?
   published       Boolean  @default(true)
   footerGroup     String?  @db.VarChar(40) // "company", "providers" – shows the link in that footer column

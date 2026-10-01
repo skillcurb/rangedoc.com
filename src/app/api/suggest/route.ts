@@ -20,8 +20,8 @@ export async function GET(request: NextRequest) {
         active: true,
         ...(q
           ? isZip
-            ? { zipCodes: { contains: q, mode: "insensitive" as const } }
-            : { OR: [{ name: { startsWith: q, mode: "insensitive" as const } }, { name: { contains: q, mode: "insensitive" as const } }, { state: { startsWith: q, mode: "insensitive" as const } }, { stateCode: { equals: q, mode: "insensitive" as const } }] }
+            ? { zipCodes: { contains: q } }
+            : { OR: [{ name: { startsWith: q } }, { name: { contains: q } }, { state: { startsWith: q } }, { stateCode: { equals: q } }] }
           : { featured: true }),
       },
       orderBy: [{ featured: "desc" }, { sortOrder: "asc" }, { name: "asc" }],
@@ -46,10 +46,10 @@ export async function GET(request: NextRequest) {
       where: {
         status: "ACTIVE",
         OR: [
-          { firstName: { contains: q, mode: "insensitive" as const } },
-          { lastName: { contains: q, mode: "insensitive" as const } },
-          { practiceName: { contains: q, mode: "insensitive" as const } },
-          ...(words.length > 1 ? [{ AND: [{ firstName: { contains: words[0], mode: "insensitive" as const } }, { lastName: { contains: words[words.length - 1], mode: "insensitive" as const } }] }] : []),
+          { firstName: { contains: q } },
+          { lastName: { contains: q } },
+          { practiceName: { contains: q } },
+          ...(words.length > 1 ? [{ AND: [{ firstName: { contains: words[0] } }, { lastName: { contains: words[words.length - 1] } }] }] : []),
         ],
       },
       include: { city: true },
@@ -61,11 +61,11 @@ export async function GET(request: NextRequest) {
   // Conditions (pain types) + specialties/treatments
   const [conditions, specialties] = await Promise.all([
     prisma.condition.findMany({
-      where: { active: true, ...(q ? { OR: [{ name: { contains: q, mode: "insensitive" as const } }, { keywords: { contains: q, mode: "insensitive" as const } }] } : {}) },
+      where: { active: true, ...(q ? { OR: [{ name: { contains: q } }, { keywords: { contains: q } }] } : {}) },
       orderBy: { sortOrder: "asc" },
       take: q ? 8 : 10,
     }),
-    q ? prisma.specialty.findMany({ where: { name: { contains: q, mode: "insensitive" as const } }, take: 4 }) : Promise.resolve([]),
+    q ? prisma.specialty.findMany({ where: { name: { contains: q } }, take: 4 }) : Promise.resolve([]),
   ]);
   return NextResponse.json([
     ...conditions.map((c) => ({ type: "condition", label: c.name, sub: "Condition / pain area", slug: c.slug })),

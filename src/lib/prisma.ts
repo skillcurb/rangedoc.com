@@ -1,8 +1,9 @@
 /**
  * Prisma client singleton.
  * ------------------------------------------------------------------
- * Prisma 7 talks to PostgreSQL through a "driver adapter". We use the
- * official `@prisma/adapter-pg` adapter (built on the `pg` driver).
+ * Prisma 7 talks to MySQL through a "driver adapter". We use the official
+ * `@prisma/adapter-mariadb` adapter (built on the `mariadb` driver, which
+ * works with both MySQL 8+ and MariaDB 10.6+).
  *
  * In development Next.js hot-reloads modules, which would create a new
  * connection pool on every change. We cache the client on `globalThis`
@@ -10,13 +11,13 @@
  */
 import "server-only";
 import { PrismaClient } from "@/generated/prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaMariaDb } from "@prisma/adapter-mariadb";
 
 function createClient() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not set. Copy .env.example to .env and fill it in.");
-  // The adapter accepts a normal postgresql:// connection string
-  const adapter = new PrismaPg({ connectionString: url });
+  // The adapter accepts a normal mysql://USER:PASSWORD@HOST:3306/DATABASE string
+  const adapter = new PrismaMariaDb(url);
   return new PrismaClient({
     adapter,
     log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
