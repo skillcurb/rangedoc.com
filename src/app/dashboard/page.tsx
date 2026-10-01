@@ -4,7 +4,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { ArrowRight, CalendarDays, Check, CheckCircle2, Circle, Crown, Eye, Headphones, ImageIcon, Mail, MapPin, MousePointerClick, Phone, ShieldCheck, Stethoscope, UserRound } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, gte, lt, desc, inArray } from "@/lib/db";
 import { getDashboard, profileChecklist } from "@/lib/dashboard";
 import { countByType, dailySeries, pctChange, rangeStart } from "@/lib/analytics";
 import { formatDate, initials } from "@/lib/utils";
@@ -23,8 +23,8 @@ async function Kpis({ providerId, days, percent }: { providerId: number; days: n
   const [cur, prev, emails, prevEmails] = await Promise.all([
     countByType(from, new Date(Date.now() + 1000), providerId),
     countByType(prevFrom, from, providerId),
-    prisma.providerMessage.count({ where: { providerId, createdAt: { gte: from } } }),
-    prisma.providerMessage.count({ where: { providerId, createdAt: { gte: prevFrom, lt: from } } }),
+    db.$count(t.providerMessages, and(eq(t.providerMessages.providerId, providerId), gte(t.providerMessages.createdAt, from))),
+    db.$count(t.providerMessages, and(eq(t.providerMessages.providerId, providerId), gte(t.providerMessages.createdAt, prevFrom), lt(t.providerMessages.createdAt, from))),
   ]);
   const c = (t: string) => cur[t] ?? 0;
   const p = (t: string) => prev[t] ?? 0;
@@ -58,13 +58,18 @@ async function ViewsChart({ providerId, days }: { providerId: number; days: numb
 
 async function TopConditions({ providerId, days }: { providerId: number; days: number }) {
   // Which conditions people searched when this profile appeared in results
-  const rows = await prisma.analyticsEvent.findMany({ where: { providerId, type: "SEARCH_IMPRESSION", createdAt: { gte: rangeStart(days) } }, select: { meta: true }, take: 20000 });
+  const rows = await db
+    .select({ meta: t.analyticsEvents.meta })
+    .from(t.analyticsEvents)
+    .where(and(eq(t.analyticsEvents.providerId, providerId), eq(t.analyticsEvents.type, "SEARCH_IMPRESSION"), gte(t.analyticsEvents.createdAt, rangeStart(days))))
+    .limit(20000);
   const counts = new Map<string, number>();
   for (const r of rows) {
     const slug = (r.meta as { condition?: string } | null)?.condition;
     if (slug) counts.set(slug, (counts.get(slug) ?? 0) + 1);
   }
-  const conds = await prisma.condition.findMany({ where: { slug: { in: [...counts.keys()] } }, select: { slug: true, name: true } });
+  // inArray() with an empty list is invalid SQL, so skip the query when nothing was counted
+  const conds = counts.size ? await db.select({ slug: t.conditions.slug, name: t.conditions.name }).from(t.conditions).where(inArray(t.conditions.slug, [...counts.keys()])) : [];
   const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([slug, n]) => ({ name: conds.find((c) => c.slug === slug)?.name ?? slug, n }));
   const max = top[0]?.n ?? 1;
   if (!top.length) return <p className="text-sm text-muted">No search data yet.</p>;
@@ -86,9 +91,13 @@ async function TopConditions({ providerId, days }: { providerId: number; days: n
 
 async function RecentLeads({ providerId }: { providerId: number }) {
   const [appts, msgs, calls] = await Promise.all([
-    prisma.appointmentRequest.findMany({ where: { providerId }, orderBy: { createdAt: "desc" }, take: 5 }),
-    prisma.providerMessage.findMany({ where: { providerId }, orderBy: { createdAt: "desc" }, take: 5 }),
-    prisma.analyticsEvent.findMany({ where: { providerId, type: "CALL_CLICK" }, orderBy: { createdAt: "desc" }, take: 3 }),
+    db.query.appointmentRequests.findMany({ where: eq(t.appointmentRequests.providerId, providerId), orderBy: [desc(t.appointmentRequests.createdAt)], limit: 5 }),
+    db.query.providerMessages.findMany({ where: eq(t.providerMessages.providerId, providerId), orderBy: [desc(t.providerMessages.createdAt)], limit: 5 }),
+    db.query.analyticsEvents.findMany({
+      where: and(eq(t.analyticsEvents.providerId, providerId), eq(t.analyticsEvents.type, "CALL_CLICK")),
+      orderBy: [desc(t.analyticsEvents.createdAt)],
+      limit: 3,
+    }),
   ]);
   const leads = [
     ...appts.map((a) => ({ key: `a${a.id}`, name: `${a.firstName} ${a.lastName}`, at: a.createdAt, kind: "Appointment", color: "bg-brand-50 text-brand-800", text: a.reason || "Requested an appointment", href: "/dashboard/appointments" })),

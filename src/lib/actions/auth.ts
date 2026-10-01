@@ -7,7 +7,7 @@
 import crypto from "node:crypto";
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, gt, insertId } from "@/lib/db";
 import { endSession, hashPassword, startSession, verifyPassword } from "@/lib/auth";
 import { emailLayout, esc, sendMail } from "@/lib/email";
 import { getFreePlan } from "@/lib/queries";
@@ -31,7 +31,7 @@ export async function loginAction(_: FormState, formData: FormData): Promise<For
   const role = formData.get("role") === "ADMIN" ? "ADMIN" : "PROVIDER";
   const parsed = loginSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return { error: parsed.error.issues[0].message };
-  const user = await prisma.user.findUnique({ where: { email: parsed.data.email.toLowerCase() } });
+  const user = await db.query.users.findFirst({ where: eq(t.users.email, parsed.data.email.toLowerCase()) });
   // Same message for unknown email / wrong password (don't reveal which accounts exist)
   if (!user || !(await verifyPassword(parsed.data.password, user.passwordHash)) || user.role !== role) {
     return { error: "Incorrect email or password." };
@@ -70,7 +70,7 @@ const newListingSchema = z.object({
 async function uniqueProviderSlug(base: string) {
   const root = slugify(base) || "provider";
   let s = root;
-  for (let i = 2; await prisma.provider.findUnique({ where: { slug: s } }); i++) s = `${root}-${i}`;
+  for (let i = 2; await db.query.providers.findFirst({ where: eq(t.providers.slug, s), columns: { id: true } }); i++) s = `${root}-${i}`;
   return s;
 }
 
@@ -79,74 +79,77 @@ export async function registerAction(_: FormState, formData: FormData): Promise<
   const acc = accountSchema.safeParse(data);
   if (!acc.success) return { error: acc.error.issues[0].message };
   const email = acc.data.email.toLowerCase();
-  if (await prisma.user.findUnique({ where: { email } })) return { error: "An account with this email already exists. Please log in." };
+  if (await db.query.users.findFirst({ where: eq(t.users.email, email), columns: { id: true } })) return { error: "An account with this email already exists. Please log in." };
 
   const claimId = Number(formData.get("providerId")) || null;
   let providerId: number;
 
   if (claimId) {
     // ---- Claim an existing profile (admin verifies before it goes live) ----
-    const provider = await prisma.provider.findUnique({ where: { id: claimId }, include: { user: true } });
+    const provider = await db.query.providers.findFirst({ where: eq(t.providers.id, claimId), with: { user: true } });
     if (!provider) return { error: "Profile not found." };
     if (provider.claimStatus !== "UNCLAIMED" || provider.user) return { error: "This profile has already been claimed or a claim is pending." };
     if (formData.get("confirmOwner") !== "on") return { error: "Please confirm that you are this provider." };
-    await prisma.provider.update({
-      where: { id: claimId },
-      data: {
+    await db
+      .update(t.providers)
+      .set({
         claimStatus: "PENDING",
         claimNote: `Claimed by ${acc.data.name} <${email}> ${acc.data.phone ?? ""}. License #: ${formData.get("licenseNumber") || "—"}. ${formData.get("claimMessage") || ""}`.trim(),
-      },
-    });
+      })
+      .where(eq(t.providers.id, claimId));
     providerId = claimId;
   } else {
     // ---- Create a brand-new listing (goes live immediately as a free claimed profile) ----
     const listing = newListingSchema.safeParse(data);
     if (!listing.success) return { error: listing.error.issues[0].message };
     const l = listing.data;
-    const city = await prisma.city.findUnique({ where: { id: l.cityId } });
+    const city = await db.query.cities.findFirst({ where: eq(t.cities.id, l.cityId) });
     if (!city) return { error: "Choose your city" };
     const freePlan = await getFreePlan();
-    const provider = await prisma.provider.create({
-      data: {
-        slug: await uniqueProviderSlug(`dr ${l.firstName} ${l.lastName} ${city.name}`),
-        prefix: "Dr.",
-        firstName: l.firstName,
-        lastName: l.lastName,
-        credentials: l.credentials || null,
-        providerType: l.providerType,
-        headline: l.providerType === "CHIROPRACTOR" ? "Chiropractor" : "Physical Therapist",
-        practiceName: l.practiceName || null,
-        phone: acc.data.phone || null,
-        email,
-        licenseNumber: l.licenseNumber || null,
-        claimStatus: "CLAIMED",
-        claimedAt: new Date(),
-        planId: freePlan?.id ?? null,
+    const slug = await uniqueProviderSlug(`dr ${l.firstName} ${l.lastName} ${city.name}`);
+    // Provider + its first (primary) location are created together
+    providerId = await db.transaction(async (tx) => {
+      const id = await insertId(
+        tx.insert(t.providers).values({
+          slug,
+          prefix: "Dr.",
+          firstName: l.firstName,
+          lastName: l.lastName,
+          credentials: l.credentials || null,
+          providerType: l.providerType,
+          headline: l.providerType === "CHIROPRACTOR" ? "Chiropractor" : "Physical Therapist",
+          practiceName: l.practiceName || null,
+          phone: acc.data.phone || null,
+          email,
+          licenseNumber: l.licenseNumber || null,
+          claimStatus: "CLAIMED",
+          claimedAt: new Date(),
+          planId: freePlan?.id ?? null,
+          cityId: city.id,
+          officeHours: DEFAULT_HOURS,
+        }),
+      );
+      await tx.insert(t.providerLocations).values({
+        providerId: id,
+        name: l.practiceName || `${l.firstName} ${l.lastName}`,
+        address: l.address,
         cityId: city.id,
-        officeHours: DEFAULT_HOURS,
-        locations: {
-          create: {
-            name: l.practiceName || `${l.firstName} ${l.lastName}`,
-            address: l.address,
-            cityId: city.id,
-            cityName: city.name,
-            state: city.stateCode,
-            zip: l.zip,
-            lat: city.lat, // refine on the map in Dashboard → Locations
-            lng: city.lng,
-            isPrimary: true,
-          },
-        },
-      },
+        cityName: city.name,
+        state: city.stateCode,
+        zip: l.zip,
+        lat: city.lat, // refine on the map in Dashboard → Locations
+        lng: city.lng,
+        isPrimary: true,
+      });
+      return id;
     });
-    providerId = provider.id;
     // New public profile → rebuild sitemap and notify search engines
-    await onContentChanged([`/provider/${provider.slug}`]);
+    await onContentChanged([`/provider/${slug}`]);
   }
 
-  const user = await prisma.user.create({
-    data: { name: acc.data.name, email, passwordHash: await hashPassword(acc.data.password), role: "PROVIDER", providerId },
-  });
+  const userId = await insertId(
+    db.insert(t.users).values({ name: acc.data.name, email, passwordHash: await hashPassword(acc.data.password), role: "PROVIDER", providerId }),
+  );
 
   // Tell the admin
   const s = await getSettings();
@@ -159,7 +162,7 @@ export async function registerAction(_: FormState, formData: FormData): Promise<
     });
   }
 
-  await startSession({ userId: user.id, role: "PROVIDER" });
+  await startSession({ userId, role: "PROVIDER" });
   redirect(safeNext(formData.get("next"), "/dashboard"));
 }
 
@@ -167,10 +170,13 @@ export async function registerAction(_: FormState, formData: FormData): Promise<
 
 export async function forgotPasswordAction(_: FormState, formData: FormData): Promise<FormState> {
   const email = String(formData.get("email") ?? "").toLowerCase().trim();
-  const user = email ? await prisma.user.findUnique({ where: { email } }) : null;
+  const user = email ? await db.query.users.findFirst({ where: eq(t.users.email, email) }) : null;
   if (user) {
     const token = crypto.randomBytes(32).toString("hex");
-    await prisma.user.update({ where: { id: user.id }, data: { resetToken: token, resetTokenExpires: new Date(Date.now() + 60 * 60 * 1000) } });
+    await db
+      .update(t.users)
+      .set({ resetToken: token, resetTokenExpires: new Date(Date.now() + 60 * 60 * 1000) })
+      .where(eq(t.users.id, user.id));
     const link = siteUrl(`/reset-password?token=${token}`);
     await sendMail({ to: user.email, subject: "Reset your password", html: await emailLayout("Reset your password", `<p>Click the link below to choose a new password (valid for 1 hour):</p><p><a href="${link}">${link}</a></p>`) });
     if (process.env.NODE_ENV !== "production") console.info("[dev] password reset link:", link);
@@ -184,9 +190,13 @@ export async function resetPasswordAction(_: FormState, formData: FormData): Pro
   const password = String(formData.get("password") ?? "");
   if (password.length < 8) return { error: "Password must be at least 8 characters" };
   if (password !== formData.get("confirm")) return { error: "Passwords do not match" };
-  const user = await prisma.user.findFirst({ where: { resetToken: token, resetTokenExpires: { gt: new Date() } } });
+  // An empty token must never match (users without a reset token have NULL)
+  const user = token ? await db.query.users.findFirst({ where: and(eq(t.users.resetToken, token), gt(t.users.resetTokenExpires, new Date())) }) : undefined;
   if (!user) return { error: "This reset link is invalid or has expired." };
-  await prisma.user.update({ where: { id: user.id }, data: { passwordHash: await hashPassword(password), resetToken: null, resetTokenExpires: null } });
+  await db
+    .update(t.users)
+    .set({ passwordHash: await hashPassword(password), resetToken: null, resetTokenExpires: null })
+    .where(eq(t.users.id, user.id));
   await startSession({ userId: user.id, role: user.role });
   redirect(user.role === "ADMIN" ? "/admin" : "/dashboard");
 }

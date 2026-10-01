@@ -1,7 +1,7 @@
 /** BROWSE BY CONDITION  ( /conditions ) */
 import type { Metadata } from "next";
 import Link from "next/link";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, asc, count } from "@/lib/db";
 import { pageMetadata } from "@/lib/seo";
 import { AppImage } from "@/components/ui/AppImage";
 
@@ -10,7 +10,13 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function ConditionsPage() {
-  const conditions = await prisma.condition.findMany({ where: { active: true }, orderBy: { sortOrder: "asc" }, include: { _count: { select: { providers: true } } } });
+  // Active conditions + how many providers are linked to each (one grouped count on the join table)
+  const [rows, counts] = await Promise.all([
+    db.query.conditions.findMany({ where: eq(t.conditions.active, true), orderBy: [asc(t.conditions.sortOrder)] }),
+    db.select({ conditionId: t.providerConditions.conditionId, n: count() }).from(t.providerConditions).groupBy(t.providerConditions.conditionId),
+  ]);
+  const countBy = new Map(counts.map((r) => [r.conditionId, r.n]));
+  const conditions = rows.map((c) => ({ ...c, _count: { providers: countBy.get(c.id) ?? 0 } }));
   return (
     <div className="container-x py-10">
       <h1 className="text-4xl font-extrabold">Browse by Condition</h1>

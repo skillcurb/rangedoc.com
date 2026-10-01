@@ -4,8 +4,9 @@
  * (Other admins' passwords can be reset in Admin → Users.)
  */
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { CheckCircle2 } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
 import { enabledOAuth } from "@/lib/oauth";
 import { changeAdminPassword, saveAdminProfile, unlinkSocial } from "@/lib/admin/account";
@@ -19,7 +20,8 @@ export const metadata = { title: "My Account" };
 
 export default async function AdminAccountPage() {
   const me = await requireAdmin();
-  const [user, oauth] = await Promise.all([prisma.user.findUniqueOrThrow({ where: { id: me.id } }), enabledOAuth()]);
+  const [user, oauth] = await Promise.all([db.query.users.findFirst({ where: eq(t.users.id, me.id) }), enabledOAuth()]);
+  if (!user) notFound();
   return (
     <div className="space-y-6">
       <PageHeader title="My Account" subtitle="Your admin profile, password and sign-in methods." />

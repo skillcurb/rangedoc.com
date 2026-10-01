@@ -8,7 +8,7 @@ import { Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight, ChevronsRight, ShieldCheck, Users } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, asc } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { pageMetadata } from "@/lib/seo";
 import { AppImage } from "@/components/ui/AppImage";
@@ -25,7 +25,7 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 async function Steps() {
-  const steps = await prisma.contentBlock.findMany({ where: { section: "claim_steps", active: true }, orderBy: { sortOrder: "asc" } });
+  const steps = await db.query.contentBlocks.findMany({ where: and(eq(t.contentBlocks.section, "claim_steps"), eq(t.contentBlocks.active, true)), orderBy: [asc(t.contentBlocks.sortOrder)] });
   return (
     <ol className="mt-8 flex flex-col gap-5 sm:flex-row sm:items-start">
       {steps.map((s, i) => (
@@ -43,7 +43,7 @@ async function Steps() {
 }
 
 async function WhyClaim() {
-  const [s, items] = await Promise.all([getSettings(), prisma.contentBlock.findMany({ where: { section: "claim_why", active: true }, orderBy: { sortOrder: "asc" } })]);
+  const [s, items] = await Promise.all([getSettings(), db.query.contentBlocks.findMany({ where: and(eq(t.contentBlocks.section, "claim_why"), eq(t.contentBlocks.active, true)), orderBy: [asc(t.contentBlocks.sortOrder)] })]);
   return (
     <section className="py-12">
       <div className="container-x">
@@ -64,7 +64,7 @@ async function WhyClaim() {
 }
 
 async function Testimonials() {
-  const [s, items] = await Promise.all([getSettings(), prisma.testimonial.findMany({ where: { page: "claim", active: true }, orderBy: { sortOrder: "asc" } })]);
+  const [s, items] = await Promise.all([getSettings(), db.query.testimonials.findMany({ where: and(eq(t.testimonials.page, "claim"), eq(t.testimonials.active, true)), orderBy: [asc(t.testimonials.sortOrder)] })]);
   if (!items.length) return null;
   return (
     <section className="bg-surface py-12">
@@ -72,18 +72,18 @@ async function Testimonials() {
         <h2 className="section-title">{s.claim.testimonialsTitle}</h2>
         <p className="section-subtitle mb-6">{s.claim.testimonialsSubtitle}</p>
         <div className="reveal grid gap-4 md:grid-cols-3">
-          {items.map((t) => (
-            <figure key={t.id} className="card card-hover flex gap-4 p-5">
+          {items.map((tm) => (
+            <figure key={tm.id} className="card card-hover flex gap-4 p-5">
               <div className="relative size-20 shrink-0 overflow-hidden rounded-full bg-navy-50">
-                <AppImage src={t.avatar} alt={t.name} fill sizes="80px" className="object-cover" />
+                <AppImage src={tm.avatar} alt={tm.name} fill sizes="80px" className="object-cover" />
               </div>
               <div>
-                <blockquote className="text-sm text-navy-800">“{t.quote}”</blockquote>
+                <blockquote className="text-sm text-navy-800">“{tm.quote}”</blockquote>
                 <figcaption className="mt-2 text-sm">
-                  <b className="text-navy-900">{t.name}</b>
-                  <span className="block text-xs text-muted">{[t.role, t.location].filter(Boolean).join(" • ")}</span>
+                  <b className="text-navy-900">{tm.name}</b>
+                  <span className="block text-xs text-muted">{[tm.role, tm.location].filter(Boolean).join(" • ")}</span>
                 </figcaption>
-                <Stars value={t.rating} size={14} className="mt-1" />
+                <Stars value={tm.rating} size={14} className="mt-1" />
               </div>
             </figure>
           ))}
@@ -94,7 +94,7 @@ async function Testimonials() {
 }
 
 async function Pricing() {
-  const [s, plans] = await Promise.all([getSettings(), prisma.plan.findMany({ where: { active: true }, orderBy: { sortOrder: "asc" } })]);
+  const [s, plans] = await Promise.all([getSettings(), db.query.plans.findMany({ where: eq(t.plans.active, true), orderBy: [asc(t.plans.sortOrder)] })]);
   return (
     <section id="pricing" className="scroll-mt-20 py-12">
       <div className="container-x relative">

@@ -4,7 +4,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowRight } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, asc } from "@/lib/db";
 import { buildMetadata } from "@/lib/seo";
 import { AppImage } from "@/components/ui/AppImage";
 import { Breadcrumbs } from "@/components/ui/Misc";
@@ -14,15 +14,15 @@ import { TopProviders } from "@/components/site/TopProviders";
 type Props = { params: Promise<{ slug: string }> };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const c = await prisma.city.findUnique({ where: { slug: (await params).slug } });
+  const c = await db.query.cities.findFirst({ where: eq(t.cities.slug, (await params).slug) });
   if (!c) return { title: "City not found" };
   return buildMetadata({ title: c.metaTitle || `Physical Therapists & Chiropractors in ${c.name}, ${c.stateCode}`, description: c.metaDescription || c.description, keywords: c.metaKeywords, image: c.ogImage || c.image, path: `/locations/${c.slug}` });
 }
 
 export default async function CityPage({ params }: Props) {
-  const c = await prisma.city.findUnique({ where: { slug: (await params).slug } });
+  const c = await db.query.cities.findFirst({ where: eq(t.cities.slug, (await params).slug) });
   if (!c || !c.active) notFound();
-  const conditions = await prisma.condition.findMany({ where: { active: true }, orderBy: { sortOrder: "asc" }, take: 12 });
+  const conditions = await db.query.conditions.findMany({ where: eq(t.conditions.active, true), orderBy: [asc(t.conditions.sortOrder)], limit: 12 });
   return (
     <div>
       <section className="relative h-56 overflow-hidden sm:h-72">

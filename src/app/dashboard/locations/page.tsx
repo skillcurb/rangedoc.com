@@ -1,7 +1,7 @@
 /** DASHBOARD → LOCATIONS ( /dashboard/locations ) – limited by plan */
 import Link from "next/link";
 import { MapPin, Star } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, asc, desc } from "@/lib/db";
 import { getDashboard } from "@/lib/dashboard";
 import { deleteLocation, makePrimaryLocation } from "@/lib/actions/provider";
 import { PageHeader, Panel } from "@/components/panel/PanelUi";
@@ -13,8 +13,15 @@ export const metadata = { title: "Locations" };
 export default async function LocationsPage() {
   const { provider, features } = await getDashboard();
   const [locations, cities] = await Promise.all([
-    prisma.providerLocation.findMany({ where: { providerId: provider.id }, orderBy: [{ isPrimary: "desc" }, { sortOrder: "asc" }] }),
-    prisma.city.findMany({ where: { active: true }, orderBy: { name: "asc" }, select: { id: true, name: true, stateCode: true, lat: true, lng: true } }),
+    db.query.providerLocations.findMany({
+      where: eq(t.providerLocations.providerId, provider.id),
+      orderBy: [desc(t.providerLocations.isPrimary), asc(t.providerLocations.sortOrder)],
+    }),
+    db.query.cities.findMany({
+      where: eq(t.cities.active, true),
+      orderBy: [asc(t.cities.name)],
+      columns: { id: true, name: true, stateCode: true, lat: true, lng: true },
+    }),
   ]);
   const canAdd = locations.length < features.maxLocations;
   return (

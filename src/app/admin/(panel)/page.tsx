@@ -5,7 +5,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { ArrowRight, CalendarCheck, DollarSign, Eye, Mail, MousePointerClick, Search, Stethoscope, UserCheck, Users } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, gte, lt, inArray, desc, sum } from "@/lib/db";
 import { countByType, dailySeries, pctChange, rangeStart, topBy } from "@/lib/analytics";
 import { formatDate, formatMoney, providerName } from "@/lib/utils";
 import { PageHeader, Panel, RangeTabs, StatCard, StatusBadge } from "@/components/panel/PanelUi";
@@ -21,13 +21,21 @@ async function Kpis({ days }: { days: number }) {
   const [cur, prev, visitors, prevVisitors, planRev, orderRev, providers, claimed] = await Promise.all([
     countByType(from, new Date(Date.now() + 1000)),
     countByType(prevFrom, from),
-    prisma.visitor.count({ where: { lastSeenAt: { gte: from } } }),
-    prisma.visitor.count({ where: { lastSeenAt: { gte: prevFrom, lt: from } } }),
-    prisma.planOrder.aggregate({ where: { status: "PAID", paidAt: { gte: from } }, _sum: { amountCents: true } }),
-    prisma.order.aggregate({ where: { status: { in: ["PAID", "PROCESSING", "SHIPPED", "COMPLETED"] }, createdAt: { gte: from } }, _sum: { totalCents: true } }),
-    prisma.provider.count(),
-    prisma.provider.count({ where: { claimStatus: "CLAIMED" } }),
+    db.$count(t.visitors, gte(t.visitors.lastSeenAt, from)),
+    db.$count(t.visitors, and(gte(t.visitors.lastSeenAt, prevFrom), lt(t.visitors.lastSeenAt, from))),
+    // SUM() comes back as a string (or null when no rows match)
+    db
+      .select({ total: sum(t.planOrders.amountCents) })
+      .from(t.planOrders)
+      .where(and(eq(t.planOrders.status, "PAID"), gte(t.planOrders.paidAt, from))),
+    db
+      .select({ total: sum(t.orders.totalCents) })
+      .from(t.orders)
+      .where(and(inArray(t.orders.status, ["PAID", "PROCESSING", "SHIPPED", "COMPLETED"]), gte(t.orders.createdAt, from))),
+    db.$count(t.providers),
+    db.$count(t.providers, eq(t.providers.claimStatus, "CLAIMED")),
   ]);
+  const revenue = Number(planRev[0]?.total ?? 0) + Number(orderRev[0]?.total ?? 0);
   const c = (t: string) => cur[t] ?? 0;
   const p = (t: string) => prev[t] ?? 0;
   const leads = c("APPOINTMENT_SUBMIT") + c("EMAIL_SUBMIT") + c("CALL_CLICK");
@@ -40,7 +48,7 @@ async function Kpis({ days }: { days: number }) {
       <StatCard label="Profile views" value={c("PROFILE_VIEW")} change={pctChange(c("PROFILE_VIEW"), p("PROFILE_VIEW"))} icon={<Stethoscope className="size-6" />} />
       <StatCard label="Leads (calls, emails, appointments)" value={leads} change={pctChange(leads, prevLeads)} icon={<CalendarCheck className="size-6" />} />
       <StatCard label="Website clicks" value={c("WEBSITE_CLICK")} change={pctChange(c("WEBSITE_CLICK"), p("WEBSITE_CLICK"))} icon={<MousePointerClick className="size-6" />} />
-      <StatCard label="Revenue (plans + products)" value={formatMoney((planRev._sum.amountCents ?? 0) + (orderRev._sum.totalCents ?? 0))} icon={<DollarSign className="size-6" />} />
+      <StatCard label="Revenue (plans + products)" value={formatMoney(revenue)} icon={<DollarSign className="size-6" />} />
       <StatCard label="Claimed profiles" value={`${claimed} / ${providers}`} icon={<UserCheck className="size-6" />} />
     </div>
   );
@@ -60,11 +68,11 @@ async function Traffic({ days }: { days: number }) {
 
 async function Recent() {
   const [claims, appts, orders, planOrders, reviews] = await Promise.all([
-    prisma.provider.findMany({ where: { claimStatus: "PENDING" }, take: 5, orderBy: { updatedAt: "desc" } }),
-    prisma.appointmentRequest.findMany({ take: 6, orderBy: { createdAt: "desc" }, include: { provider: true } }),
-    prisma.order.findMany({ take: 5, orderBy: { createdAt: "desc" } }),
-    prisma.planOrder.findMany({ take: 5, orderBy: { createdAt: "desc" }, include: { plan: true } }),
-    prisma.review.count({ where: { status: "PENDING" } }),
+    db.query.providers.findMany({ where: eq(t.providers.claimStatus, "PENDING"), limit: 5, orderBy: [desc(t.providers.updatedAt)] }),
+    db.query.appointmentRequests.findMany({ limit: 6, orderBy: [desc(t.appointmentRequests.createdAt)], with: { provider: true } }),
+    db.query.orders.findMany({ limit: 5, orderBy: [desc(t.orders.createdAt)] }),
+    db.query.planOrders.findMany({ limit: 5, orderBy: [desc(t.planOrders.createdAt)], with: { plan: true } }),
+    db.$count(t.reviews, eq(t.reviews.status, "PENDING")),
   ]);
   return (
     <div className="grid gap-6 xl:grid-cols-3">

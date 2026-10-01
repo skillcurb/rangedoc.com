@@ -5,8 +5,8 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { Search } from "lucide-react";
-import type { Prisma } from "@/generated/prisma/client";
-import { prisma } from "@/lib/prisma";
+import type { SQL } from "drizzle-orm";
+import { db, t, eq, desc, asc, count } from "@/lib/db";
 import { BlogCard } from "@/components/site/BlogCard";
 import { EmptyState, Pagination } from "@/components/ui/Misc";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -14,10 +14,10 @@ import { cn } from "@/lib/utils";
 
 const PER_PAGE = 9;
 
-async function Posts({ where, page, basePath, q }: { where: Prisma.BlogPostWhereInput; page: number; basePath: string; q?: string }) {
+async function Posts({ where, page, basePath, q }: { where: SQL | undefined; page: number; basePath: string; q?: string }) {
   const [total, posts] = await Promise.all([
-    prisma.blogPost.count({ where }),
-    prisma.blogPost.findMany({ where, orderBy: { publishedAt: "desc" }, skip: (page - 1) * PER_PAGE, take: PER_PAGE, include: { category: { select: { name: true, slug: true } } } }),
+    db.$count(t.blogPosts, where),
+    db.query.blogPosts.findMany({ where, orderBy: [desc(t.blogPosts.publishedAt)], offset: (page - 1) * PER_PAGE, limit: PER_PAGE, with: { category: { columns: { name: true, slug: true } } } }),
   ]);
   if (!posts.length) return <EmptyState title="No articles found" text="Try another category or search term." />;
   return (
@@ -35,17 +35,22 @@ async function Posts({ where, page, basePath, q }: { where: Prisma.BlogPostWhere
 export async function BlogListing({ title, subtitle, where, page, basePath, q, activeCategory, activeTag }: {
   title: string;
   subtitle?: string | null;
-  where: Prisma.BlogPostWhereInput;
+  /** Drizzle filter on blog_posts, e.g. and(eq(t.blogPosts.published, true), eq(t.blogPosts.categoryId, 3)) */
+  where: SQL | undefined;
   page: number;
   basePath: string;
   q?: string;
   activeCategory?: string;
   activeTag?: string;
 }) {
-  const [categories, tags] = await Promise.all([
-    prisma.blogCategory.findMany({ orderBy: { name: "asc" }, include: { _count: { select: { posts: { where: { published: true } } } } } }),
-    prisma.blogTag.findMany({ orderBy: { name: "asc" } }),
+  const [cats, postCounts, tags] = await Promise.all([
+    db.query.blogCategories.findMany({ orderBy: [asc(t.blogCategories.name)] }),
+    // Published posts per category (one grouped count query)
+    db.select({ categoryId: t.blogPosts.categoryId, n: count() }).from(t.blogPosts).where(eq(t.blogPosts.published, true)).groupBy(t.blogPosts.categoryId),
+    db.query.blogTags.findMany({ orderBy: [asc(t.blogTags.name)] }),
   ]);
+  const countBy = new Map(postCounts.map((r) => [r.categoryId, r.n]));
+  const categories = cats.map((c) => ({ ...c, _count: { posts: countBy.get(c.id) ?? 0 } }));
   return (
     <>
       <section className="bg-gradient-to-b from-navy-50 to-white">
@@ -86,9 +91,9 @@ export async function BlogListing({ title, subtitle, where, page, basePath, q, a
           <div className="card p-4">
             <h2 className="mb-3 font-bold">Tags</h2>
             <div className="flex flex-wrap gap-2">
-              {tags.map((t) => (
-                <Link key={t.id} href={`/blog/tag/${t.slug}`} className={cn("chip hover:border-brand-400", activeTag === t.slug && "border-brand-600 bg-brand-50 text-brand-800")}>
-                  #{t.name}
+              {tags.map((tag) => (
+                <Link key={tag.id} href={`/blog/tag/${tag.slug}`} className={cn("chip hover:border-brand-400", activeTag === tag.slug && "border-brand-600 bg-brand-50 text-brand-800")}>
+                  #{tag.name}
                 </Link>
               ))}
             </div>

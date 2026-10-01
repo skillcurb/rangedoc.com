@@ -6,7 +6,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Crown, Hourglass } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { getDashboard } from "@/lib/dashboard";
 import { logoutAction } from "@/lib/actions/auth";
@@ -18,8 +18,8 @@ export const metadata: Metadata = { title: { default: "Provider Dashboard", temp
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [{ user, provider, features }, settings] = await Promise.all([getDashboard(), getSettings()]);
   const [newLeads, unread] = await Promise.all([
-    prisma.appointmentRequest.count({ where: { providerId: provider.id, status: "NEW" } }),
-    prisma.providerMessage.count({ where: { providerId: provider.id, read: false } }),
+    db.$count(t.appointmentRequests, and(eq(t.appointmentRequests.providerId, provider.id), eq(t.appointmentRequests.status, "NEW"))),
+    db.$count(t.providerMessages, and(eq(t.providerMessages.providerId, provider.id), eq(t.providerMessages.read, false))),
   ]);
 
   const sections: NavSection[] = [

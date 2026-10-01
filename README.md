@@ -1,6 +1,6 @@
 # RangeDoc — Physical Therapist & Chiropractor Directory
 
-A complete, city-based healthcare provider directory built with **Next.js 16 (App Router)**, **React 19**, **TypeScript**, **Tailwind CSS 4**, **Prisma 7** and **MySQL**.
+A complete, city-based healthcare provider directory built with **Next.js 16 (App Router)**, **React 19**, **TypeScript**, **Tailwind CSS 4**, **Drizzle ORM** and **MySQL**.
 
 Visitors search for licensed Physical Therapists and Chiropractors by pain area and location, compare providers, and contact them (appointment request, call, email, website). Providers claim their profiles (free or paid plans) and manage everything from their dashboard. Admins control all content, pricing, SEO, payments and analytics from `/admin`.
 
@@ -14,14 +14,14 @@ Visitors search for licensed Physical Therapists and Chiropractors by pain area 
 
 ### Install
 ```bash
-# 1. Install packages (also generates the Prisma client)
+# 1. Install packages
 npm install
 
 # 2. Create your environment file and edit it
 cp .env.example .env
 #    DATABASE_URL="mysql://USER:PASSWORD@localhost:3306/rangedoc"
 #    (special characters in the password must be URL-encoded, e.g. @ → %40;
-#     hosted databases that require TLS: add  ?ssl=true  at the end)
+#     hosted databases that require TLS: add  ?ssl={"rejectUnauthorized":true}  at the end)
 #    AUTH_SECRET=<long random string>   (run: openssl rand -base64 48)
 #    NEXT_PUBLIC_SITE_URL="http://localhost:3000"
 
@@ -30,7 +30,7 @@ cp .env.example .env
 #    (or with Docker:  docker run -d --name rangedoc-db -e MYSQL_ROOT_PASSWORD=password -e MYSQL_DATABASE=rangedoc -p 3306:3306 mysql:8.4)
 
 # 4. Create the tables and load demo content
-npm run setup          # = prisma generate + prisma db push + prisma db seed
+npm run setup          # = drizzle-kit migrate (creates all tables) + demo seed
 
 # 5. Run it
 npm run dev            # http://localhost:3000
@@ -53,7 +53,8 @@ npm start              # or run behind PM2 / systemd / Docker
 ```
 - Set `NEXT_PUBLIC_SITE_URL` to your real domain (used for SEO canonical URLs, sitemap, emails and payment return URLs).
 - Uploaded files are saved in `storage/uploads` (change with `UPLOAD_DIR`). **Keep this folder on persistent disk and back it up.** On serverless hosts without a disk, switch `src/lib/uploads.ts` to S3/Cloudflare R2.
-- Database tables are created from `prisma/schema.prisma` by `npm run setup` (`prisma db push`). If you prefer versioned migrations, run `npm run db:migrate -- --name init` once in development (creates `prisma/migrations`), then use `npm run db:deploy` on each release. When you change `schema.prisma`, run `npm run db:push` (or `db:migrate`).
+- Database tables come from the SQL migrations in `/drizzle` (generated from `src/db/schema.ts`). Run `npm run db:migrate` on each release – it only applies migrations that haven't run yet.
+- Changing the data model: edit `src/db/schema.ts` → `npm run db:generate` (writes a new SQL file into `/drizzle`, review it) → `npm run db:migrate`. For quick local experiments `npm run db:push` syncs tables without a migration file. `npm run db:studio` opens Drizzle Studio to browse the data.
 
 ---
 
@@ -151,9 +152,12 @@ All numbers and switches are editable per plan.
 ## 4. How things work (for developers)
 
 ```
-prisma/schema.prisma        Data model (MySQL, utf8mb4). Money stored as integer cents.
-prisma/seed.ts              Demo content
-prisma.config.ts            Prisma 7 config (DB URL, seed command)
+src/db/schema.ts            Drizzle data model – every MySQL table (utf8mb4). Money stored as integer cents.
+src/db/relations.ts         Table relations for db.query.* (nested loading with `with`)
+src/db/seed.ts              Demo content (npm run db:seed)
+src/lib/db.ts               Drizzle client (mysql2 pool) + helpers (pluck, insertId, isDuplicateKey)
+drizzle/                    SQL migrations (initial migration included)
+drizzle.config.ts           Drizzle Kit config (DB URL, schema path, migrations folder)
 src/proxy.ts                Next 16 "proxy" (middleware): protects /admin & /dashboard, sets visitor cookie
 src/app/(site)/…            Public pages (shared header/footer)
 src/app/dashboard/…         Provider dashboard
@@ -175,7 +179,7 @@ src/lib/actions/…           Server actions (forms)
 src/components/…            UI (site, profile, search, dashboard, admin, media library, editor)
 ```
 
-- **Add a new admin section**: add the model to `schema.prisma`, run `npm run db:push` (or `db:migrate`), then add one entry to `src/lib/admin/resources.ts`. The list, search, filters, create/edit form, media picker and delete all work automatically.
+- **Add a new admin section**: add the table to `src/db/schema.ts` (and its relations to `src/db/relations.ts`), run `npm run db:generate && npm run db:migrate`, then add one entry to `src/lib/admin/resources.ts`. The list, search, filters, create/edit form, media picker and delete all work automatically.
 - **Suspense & skeletons**: every data section on public pages and dashboards is an async Server Component wrapped in `<Suspense>` with a matching skeleton (`src/components/ui/Skeleton.tsx`); route-level `loading.tsx` files cover full-page loads.
 - **Uploads**: files are served by `src/app/uploads/[...path]/route.ts` because Next.js does not serve files added to `/public` after a build. Images are converted to WebP (max 2000 px) with `sharp`.
 - **Maps** use Leaflet + OpenStreetMap (no API key). Swap the tile URL in `src/components/site/map/*` for Mapbox/Google tiles if you prefer.

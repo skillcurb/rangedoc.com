@@ -4,7 +4,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { CheckCircle2, Clock } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { formatMoney } from "@/lib/utils";
 import { ClearCartOnMount } from "@/components/checkout/CheckoutForms";
@@ -14,8 +14,8 @@ export const metadata: Metadata = { title: "Thank you", robots: { index: false }
 export default async function SuccessPage({ searchParams }: { searchParams: Promise<{ kind?: string; order?: string }> }) {
   const { kind, order } = await searchParams;
   const s = await getSettings();
-  const planOrder = kind === "plan" && order ? await prisma.planOrder.findUnique({ where: { orderNumber: order }, include: { plan: true } }) : null;
-  const productOrder = kind === "order" && order ? await prisma.order.findUnique({ where: { orderNumber: order } }) : null;
+  const planOrder = kind === "plan" && order ? await db.query.planOrders.findFirst({ where: eq(t.planOrders.orderNumber, order), with: { plan: true } }) : null;
+  const productOrder = kind === "order" && order ? await db.query.orders.findFirst({ where: eq(t.orders.orderNumber, order) }) : null;
   const status = planOrder?.status ?? productOrder?.status;
   const paid = status === "PAID";
 

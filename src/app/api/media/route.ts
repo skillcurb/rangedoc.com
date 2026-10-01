@@ -7,8 +7,7 @@
  * Providers only see their own files (stored in providers/{id}/…).
  */
 import { NextResponse, type NextRequest } from "next/server";
-import type { Prisma } from "@/generated/prisma/client";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, or, like, desc } from "@/lib/db";
 import { getCurrentUser } from "@/lib/auth";
 import { mediaFolder, providerFolder, saveUpload } from "@/lib/uploads";
 
@@ -30,14 +29,16 @@ export async function GET(request: NextRequest) {
   const type = sp.get("type");
   const q = sp.get("q")?.trim();
 
-  const where: Prisma.MediaWhereInput = {
-    ...(who.providerId ? { providerId: who.providerId } : {}),
-    ...(type === "image" ? { mimeType: { startsWith: "image/" } } : type === "video" ? { mimeType: { startsWith: "video/" } } : type === "pdf" ? { mimeType: "application/pdf" } : {}),
-    ...(q ? { OR: [{ originalName: { contains: q } }, { alt: { contains: q } }, { title: { contains: q } }] } : {}),
-  };
+  const m = t.media;
+  // undefined parts are ignored by and()
+  const where = and(
+    who.providerId ? eq(m.providerId, who.providerId) : undefined,
+    type === "image" ? like(m.mimeType, "image/%") : type === "video" ? like(m.mimeType, "video/%") : type === "pdf" ? eq(m.mimeType, "application/pdf") : undefined,
+    q ? or(like(m.originalName, `%${q}%`), like(m.alt, `%${q}%`), like(m.title, `%${q}%`)) : undefined,
+  );
   const [total, items] = await Promise.all([
-    prisma.media.count({ where }),
-    prisma.media.findMany({ where, orderBy: { createdAt: "desc" }, skip: (page - 1) * PAGE_SIZE, take: PAGE_SIZE }),
+    db.$count(m, where),
+    db.select().from(m).where(where).orderBy(desc(m.createdAt)).limit(PAGE_SIZE).offset((page - 1) * PAGE_SIZE),
   ]);
   return NextResponse.json({ items, total, page, hasMore: page * PAGE_SIZE < total });
 }

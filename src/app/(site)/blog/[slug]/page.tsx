@@ -6,7 +6,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Clock, MessageCircle } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, ne, and, asc, desc, sql, pluck } from "@/lib/db";
 import { buildMetadata } from "@/lib/seo";
 import { formatDate, siteUrl, stripHtml, truncate } from "@/lib/utils";
 import { AppImage } from "@/components/ui/AppImage";
@@ -20,7 +20,9 @@ import { ArticleShare } from "@/components/blog/ArticleShare";
 type Props = { params: Promise<{ slug: string }> };
 
 async function getPost(slug: string) {
-  return prisma.blogPost.findUnique({ where: { slug }, include: { category: true, tags: true } });
+  const post = await db.query.blogPosts.findFirst({ where: eq(t.blogPosts.slug, slug), with: { category: true, tags: { with: { tag: true } } } });
+  // Tags come back as join rows → flatten to BlogTag[]
+  return post ? { ...post, tags: pluck(post.tags, "tag") } : undefined;
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
@@ -29,7 +31,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return buildMetadata({
     title: p.metaTitle || p.title,
     description: p.metaDescription || p.excerpt || truncate(stripHtml(p.content), 160),
-    keywords: p.metaKeywords || p.tags.map((t) => t.name).join(", "),
+    keywords: p.metaKeywords || p.tags.map((tag) => tag.name).join(", "),
     image: p.ogImage || p.coverImage,
     path: `/blog/${p.slug}`,
     type: "article",
@@ -37,7 +39,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 async function Comments({ postId }: { postId: number }) {
-  const comments = await prisma.blogComment.findMany({ where: { postId, status: "APPROVED" }, orderBy: { createdAt: "asc" } });
+  const comments = await db.query.blogComments.findMany({ where: and(eq(t.blogComments.postId, postId), eq(t.blogComments.status, "APPROVED")), orderBy: [asc(t.blogComments.createdAt)] });
   return (
     <div className="space-y-4">
       {comments.length === 0 && <p className="text-sm text-muted">No comments yet. Start the conversation!</p>}
@@ -54,7 +56,12 @@ async function Comments({ postId }: { postId: number }) {
 }
 
 async function Related({ id, categoryId }: { id: number; categoryId: number | null }) {
-  const posts = await prisma.blogPost.findMany({ where: { published: true, id: { not: id }, ...(categoryId ? { categoryId } : {}) }, orderBy: { publishedAt: "desc" }, take: 3, include: { category: true } });
+  const posts = await db.query.blogPosts.findMany({
+    where: and(eq(t.blogPosts.published, true), ne(t.blogPosts.id, id), categoryId ? eq(t.blogPosts.categoryId, categoryId) : undefined),
+    orderBy: [desc(t.blogPosts.publishedAt)],
+    limit: 3,
+    with: { category: true },
+  });
   if (!posts.length) return null;
   return (
     <section className="mt-12">
@@ -72,7 +79,7 @@ export default async function BlogPostPage({ params }: Props) {
   const p = await getPost((await params).slug);
   if (!p || !p.published) notFound();
   // Count the view (simple counter – detailed stats are in analytics)
-  await prisma.blogPost.update({ where: { id: p.id }, data: { views: { increment: 1 } } });
+  await db.update(t.blogPosts).set({ views: sql`${t.blogPosts.views} + 1` }).where(eq(t.blogPosts.id, p.id));
   const avg = p.ratingCount ? p.ratingSum / p.ratingCount : 0;
 
   const jsonLd = {
@@ -114,9 +121,9 @@ export default async function BlogPostPage({ params }: Props) {
         <div className="prose-rd mt-8" dangerouslySetInnerHTML={{ __html: p.content }} />
         {p.tags.length > 0 && (
           <div className="mt-8 flex flex-wrap gap-2">
-            {p.tags.map((t) => (
-              <Link key={t.id} href={`/blog/tag/${t.slug}`} className="chip hover:border-brand-400">
-                #{t.name}
+            {p.tags.map((tag) => (
+              <Link key={tag.id} href={`/blog/tag/${tag.slug}`} className="chip hover:border-brand-400">
+                #{tag.name}
               </Link>
             ))}
           </div>

@@ -4,7 +4,7 @@
  *  - Video gallery (YouTube / Vimeo links or uploaded videos)
  *  - Social network links: Facebook, X, LinkedIn, Pinterest, YouTube, Instagram
  */
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, asc } from "@/lib/db";
 import { getDashboard } from "@/lib/dashboard";
 import { PageHeader, Panel, UpgradeNotice } from "@/components/panel/PanelUi";
 import { MediaLinksForm, VideoGalleryEditor } from "@/components/dashboard/VideoEditors";
@@ -16,7 +16,7 @@ export default async function VideosPage() {
   if (!features.allowVideo && !features.allowSocialLinks && !features.maxVideos) {
     return <UpgradeNotice feature="Videos & social links" text="Add an intro video, a video gallery and links to your Facebook, X, LinkedIn, Pinterest and YouTube pages." />;
   }
-  const videos = await prisma.providerVideo.findMany({ where: { providerId: provider.id }, orderBy: { sortOrder: "asc" } });
+  const videos = await db.query.providerVideos.findMany({ where: eq(t.providerVideos.providerId, provider.id), orderBy: [asc(t.providerVideos.sortOrder)] });
   return (
     <div className="space-y-6">
       <PageHeader title="Videos & Social" subtitle="Videos help patients get to know you before they book." />

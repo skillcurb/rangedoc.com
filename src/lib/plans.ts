@@ -9,7 +9,7 @@
  * Search ranking uses the same logic: paid first, then claimed free, then
  * unclaimed – always last.
  */
-import type { Plan } from "@/generated/prisma/client";
+import type { Plan } from "@/db/schema";
 
 export type PlanFeatures = {
   planName: string;

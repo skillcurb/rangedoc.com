@@ -1,6 +1,6 @@
 /** DASHBOARD → PHOTOS & MEDIA ( /dashboard/media ) – gallery limited by plan */
 import Link from "next/link";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, asc } from "@/lib/db";
 import { getDashboard } from "@/lib/dashboard";
 import { PageHeader, Panel } from "@/components/panel/PanelUi";
 import { GalleryManager } from "@/components/dashboard/DashboardEditors";
@@ -9,7 +9,7 @@ export const metadata = { title: "Photos & Media" };
 
 export default async function MediaPage() {
   const { provider, features } = await getDashboard();
-  const images = await prisma.galleryImage.findMany({ where: { providerId: provider.id }, orderBy: { sortOrder: "asc" } });
+  const images = await db.query.galleryImages.findMany({ where: eq(t.galleryImages.providerId, provider.id), orderBy: [asc(t.galleryImages.sortOrder)] });
   const canAdd = images.length < features.maxPhotos;
   return (
     <div className="space-y-6">

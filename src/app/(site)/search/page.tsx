@@ -4,7 +4,7 @@
  */
 import { Suspense } from "react";
 import type { Metadata } from "next";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq } from "@/lib/db";
 import { pageMetadata } from "@/lib/seo";
 import { SearchExperience } from "@/components/search/SearchExperience";
 import { SearchCardSkeleton, Skeleton } from "@/components/ui/Skeleton";
@@ -15,7 +15,7 @@ type Props = { searchParams: Promise<Record<string, string | string[] | undefine
 export async function generateMetadata({ searchParams }: Props): Promise<Metadata> {
   const sp = await searchParams;
   const loc = typeof sp.loc === "string" ? sp.loc : null;
-  const cond = typeof sp.condition === "string" ? await prisma.condition.findUnique({ where: { slug: sp.condition } }) : null;
+  const cond = typeof sp.condition === "string" ? await db.query.conditions.findFirst({ where: eq(t.conditions.slug, sp.condition) }) : null;
   const title = [cond ? `${cond.name} Specialists` : "Physical Therapists & Chiropractors", loc ? `near ${loc}` : null].filter(Boolean).join(" ");
   return pageMetadata("search", { title, description: `Compare licensed providers${loc ? ` near ${loc}` : ""}. See ratings, insurance and availability, then request an appointment.` });
 }

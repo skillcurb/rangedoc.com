@@ -4,14 +4,17 @@
  * the provider's office hours minus already-requested slots.
  */
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, gte, lt, inArray } from "@/lib/db";
 import { dayKey, parseHours, slotsForDay, ymd } from "@/lib/hours";
 
 const DAYS_AHEAD = 21;
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const provider = await prisma.provider.findUnique({ where: { id: Number(id) }, select: { id: true, officeHours: true, slotMinutes: true, acceptingNewPatients: true } });
+  const provider = await db.query.providers.findFirst({
+    where: eq(t.providers.id, Number(id)),
+    columns: { id: true, officeHours: true, slotMinutes: true, acceptingNewPatients: true },
+  });
   if (!provider) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const hours = parseHours(provider.officeHours);
@@ -21,11 +24,12 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   end.setDate(end.getDate() + DAYS_AHEAD);
 
   // Slots already taken (new or confirmed requests)
-  const taken = await prisma.appointmentRequest.findMany({
-    where: { providerId: provider.id, date: { gte: start, lt: end }, status: { in: ["NEW", "CONFIRMED"] } },
-    select: { date: true, timeSlot: true },
-  });
-  const takenSet = new Set(taken.map((t) => `${t.date.toISOString().slice(0, 10)} ${t.timeSlot}`));
+  const a = t.appointmentRequests;
+  const taken = await db
+    .select({ date: a.date, timeSlot: a.timeSlot })
+    .from(a)
+    .where(and(eq(a.providerId, provider.id), gte(a.date, start), lt(a.date, end), inArray(a.status, ["NEW", "CONFIRMED"])));
+  const takenSet = new Set(taken.map((x) => `${x.date.toISOString().slice(0, 10)} ${x.timeSlot}`));
 
   const now = new Date();
   const days = [];

@@ -4,27 +4,27 @@
  *  - Product order → mark paid, email receipt
  */
 import "server-only";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, isNotNull, sql } from "@/lib/db";
 import { planExpiryFrom } from "@/lib/plans";
 import { emailLayout, esc, sendMail } from "@/lib/email";
 import { formatMoney } from "@/lib/utils";
 import { getSettings } from "@/lib/settings";
 
 export async function fulfilPlanOrder(orderNumber: string, paymentRef: string | null) {
-  const order = await prisma.planOrder.findUnique({ where: { orderNumber }, include: { plan: true } });
+  const order = await db.query.planOrders.findFirst({ where: eq(t.planOrders.orderNumber, orderNumber), with: { plan: true } });
   if (!order) return null;
   if (order.status === "PAID") return order; // already processed (page refresh)
 
-  await prisma.planOrder.update({ where: { id: order.id }, data: { status: "PAID", paidAt: new Date(), paymentRef } });
+  await db.update(t.planOrders).set({ status: "PAID", paidAt: new Date(), paymentRef }).where(eq(t.planOrders.id, order.id));
 
   if (order.providerId) {
-    const provider = await prisma.provider.findUnique({ where: { id: order.providerId } });
+    const provider = await db.query.providers.findFirst({ where: eq(t.providers.id, order.providerId) });
     // Extend from the current expiry if they renew early
     const start = provider?.planExpiresAt && provider.planExpiresAt > new Date() && provider.planId === order.planId ? provider.planExpiresAt : new Date();
-    await prisma.provider.update({
-      where: { id: order.providerId },
-      data: { planId: order.planId, planExpiresAt: planExpiryFrom(order.plan.interval, start) },
-    });
+    await db
+      .update(t.providers)
+      .set({ planId: order.planId, planExpiresAt: planExpiryFrom(order.plan.interval, start) })
+      .where(eq(t.providers.id, order.providerId));
   }
 
   await sendMail({
@@ -39,15 +39,18 @@ export async function fulfilPlanOrder(orderNumber: string, paymentRef: string | 
 }
 
 export async function fulfilProductOrder(orderNumber: string, paymentRef: string | null) {
-  const order = await prisma.order.findUnique({ where: { orderNumber }, include: { items: true } });
+  const order = await db.query.orders.findFirst({ where: eq(t.orders.orderNumber, orderNumber), with: { items: true } });
   if (!order) return null;
   if (order.status !== "PENDING") return order;
 
-  await prisma.order.update({ where: { id: order.id }, data: { status: "PAID", paidAt: new Date(), paymentRef } });
+  await db.update(t.orders).set({ status: "PAID", paidAt: new Date(), paymentRef }).where(eq(t.orders.id, order.id));
   // Reduce stock for tracked products
   for (const item of order.items) {
     if (item.productId) {
-      await prisma.product.updateMany({ where: { id: item.productId, stock: { not: null } }, data: { stock: { decrement: item.quantity } } });
+      await db
+        .update(t.products)
+        .set({ stock: sql`${t.products.stock} - ${item.quantity}` })
+        .where(and(eq(t.products.id, item.productId), isNotNull(t.products.stock)));
     }
   }
   await sendOrderEmails(order.id);
@@ -56,7 +59,7 @@ export async function fulfilProductOrder(orderNumber: string, paymentRef: string
 
 /** Customer receipt + admin notification */
 export async function sendOrderEmails(orderId: number) {
-  const order = await prisma.order.findUnique({ where: { id: orderId }, include: { items: true } });
+  const order = await db.query.orders.findFirst({ where: eq(t.orders.id, orderId), with: { items: true } });
   if (!order) return;
   const s = await getSettings();
   const rows = order.items.map((i) => `<tr><td>${esc(i.name)} × ${i.quantity}</td><td style="text-align:right">${formatMoney(i.priceCents * i.quantity)}</td></tr>`).join("");

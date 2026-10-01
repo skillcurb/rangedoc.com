@@ -6,7 +6,8 @@
  */
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, ne, asc, inArray, type Tx } from "@/lib/db";
+import type { NewProvider } from "@/db/schema";
 import { hashPassword, requireProvider, verifyPassword } from "@/lib/auth";
 import { providerFeatures } from "@/lib/plans";
 import { getFreePlan } from "@/lib/queries";
@@ -18,7 +19,8 @@ export type ActionState = { ok?: boolean; error?: string; message?: string } | n
 
 async function ctx() {
   const user = await requireProvider();
-  const provider = await prisma.provider.findUniqueOrThrow({ where: { id: user.providerId }, include: { plan: true } });
+  const provider = await db.query.providers.findFirst({ where: eq(t.providers.id, user.providerId), with: { plan: true } });
+  if (!provider) throw new Error("Your provider profile was not found.");
   if (provider.claimStatus === "PENDING") throw new Error("Your claim is still being verified.");
   return { user, provider, features: providerFeatures(provider, await getFreePlan()) };
 }
@@ -40,6 +42,20 @@ const str = (fd: FormData, key: string) => {
   const v = fd.get(key);
   return typeof v === "string" && v.trim() ? v.trim() : null;
 };
+
+/**
+ * Replace the provider's many-to-many links (conditions / specialties /
+ * insurances): delete the old join rows, insert the new ones.
+ */
+async function replaceLinks(tx: Tx, providerId: number, conditionIds: number[], specialtyIds: number[], insuranceIds: number[]) {
+  await tx.delete(t.providerConditions).where(eq(t.providerConditions.providerId, providerId));
+  await tx.delete(t.providerSpecialties).where(eq(t.providerSpecialties.providerId, providerId));
+  await tx.delete(t.providerInsurances).where(eq(t.providerInsurances.providerId, providerId));
+  // insert() must never get an empty array, so each list is guarded
+  if (conditionIds.length) await tx.insert(t.providerConditions).values([...new Set(conditionIds)].map((conditionId) => ({ providerId, conditionId })));
+  if (specialtyIds.length) await tx.insert(t.providerSpecialties).values([...new Set(specialtyIds)].map((specialtyId) => ({ providerId, specialtyId })));
+  if (insuranceIds.length) await tx.insert(t.providerInsurances).values([...new Set(insuranceIds)].map((insuranceId) => ({ providerId, insuranceId })));
+}
 
 // ───────────────────────────── Profile ─────────────────────────────
 
@@ -64,47 +80,48 @@ export async function saveProfile(_: ActionState, fd: FormData): Promise<ActionS
   try {
     const { provider, features } = await ctx();
     const d = profileSchema.parse(Object.fromEntries(fd));
-    await prisma.provider.update({
-      where: { id: provider.id },
-      data: {
-        prefix: d.prefix || null,
-        firstName: d.firstName,
-        lastName: d.lastName,
-        credentials: d.credentials || null,
-        providerType: d.providerType,
-        headline: d.headline || null,
-        practiceName: d.practiceName || null,
-        phone: d.phone || null,
-        email: d.email || null,
-        website: d.website || null,
-        gender: d.gender || null,
-        languages: d.languages || null,
-        education: d.education || null,
-        yearsExperience: d.yearsExperience === "" || d.yearsExperience == null ? null : d.yearsExperience,
-        photo: str(fd, "photo"),
-        bio: str(fd, "bio"),
-        quote: str(fd, "quote"),
-        bestMatch: str(fd, "bestMatch"),
-        bestMatchPoints: str(fd, "bestMatchPoints"),
-        responseTime: str(fd, "responseTime"),
-        acceptingNewPatients: fd.get("acceptingNewPatients") === "on",
-        inPerson: fd.get("inPerson") === "on",
-        telehealth: fd.get("telehealth") === "on",
-        // Paid-plan fields are only saved when the plan allows them
-        ...(features.allowRatingDisplay
-          ? {
-              displayRating: fd.get("displayRating") ? Math.min(5, Math.max(0, Number(fd.get("displayRating")))) : null,
-              displayReviewCount: fd.get("displayReviewCount") ? Number(fd.get("displayReviewCount")) : null,
-              ratingSource: str(fd, "ratingSource"),
-              endorsement: str(fd, "endorsement"),
-            }
-          : {}),
-        metaTitle: str(fd, "metaTitle"),
-        metaDescription: str(fd, "metaDescription"),
-        conditions: { set: ids(fd, "conditionIds").map((id) => ({ id })) },
-        specialties: { set: ids(fd, "specialtyIds").map((id) => ({ id })) },
-        insurances: { set: ids(fd, "insuranceIds").map((id) => ({ id })) },
-      },
+    // Profile columns + taxonomy links are saved together in one transaction
+    await db.transaction(async (tx) => {
+      await tx
+        .update(t.providers)
+        .set({
+          prefix: d.prefix || null,
+          firstName: d.firstName,
+          lastName: d.lastName,
+          credentials: d.credentials || null,
+          providerType: d.providerType,
+          headline: d.headline || null,
+          practiceName: d.practiceName || null,
+          phone: d.phone || null,
+          email: d.email || null,
+          website: d.website || null,
+          gender: d.gender || null,
+          languages: d.languages || null,
+          education: d.education || null,
+          yearsExperience: d.yearsExperience === "" || d.yearsExperience == null ? null : d.yearsExperience,
+          photo: str(fd, "photo"),
+          bio: str(fd, "bio"),
+          quote: str(fd, "quote"),
+          bestMatch: str(fd, "bestMatch"),
+          bestMatchPoints: str(fd, "bestMatchPoints"),
+          responseTime: str(fd, "responseTime"),
+          acceptingNewPatients: fd.get("acceptingNewPatients") === "on",
+          inPerson: fd.get("inPerson") === "on",
+          telehealth: fd.get("telehealth") === "on",
+          // Paid-plan fields are only saved when the plan allows them
+          ...(features.allowRatingDisplay
+            ? {
+                displayRating: fd.get("displayRating") ? Math.min(5, Math.max(0, Number(fd.get("displayRating")))) : null,
+                displayReviewCount: fd.get("displayReviewCount") ? Number(fd.get("displayReviewCount")) : null,
+                ratingSource: str(fd, "ratingSource"),
+                endorsement: str(fd, "endorsement"),
+              }
+            : {}),
+          metaTitle: str(fd, "metaTitle"),
+          metaDescription: str(fd, "metaDescription"),
+        })
+        .where(eq(t.providers.id, provider.id));
+      await replaceLinks(tx, provider.id, ids(fd, "conditionIds"), ids(fd, "specialtyIds"), ids(fd, "insuranceIds"));
     });
     revalidatePath(`/provider/${provider.slug}`);
     return doneFor(provider.slug, "Profile saved");
@@ -131,18 +148,20 @@ export async function saveLocation(_: ActionState, fd: FormData): Promise<Action
   try {
     const { provider, features } = await ctx();
     const d = locationSchema.parse(Object.fromEntries(fd));
-    const city = await prisma.city.findUniqueOrThrow({ where: { id: d.cityId } });
+    const city = await db.query.cities.findFirst({ where: eq(t.cities.id, d.cityId) });
+    if (!city) return { error: "Choose a city" };
     const data = { name: d.name, address: d.address, address2: d.address2 || null, cityId: city.id, cityName: city.name, state: city.stateCode, zip: d.zip, lat: d.lat, lng: d.lng, phone: d.phone || null };
     if (d.id) {
-      await prisma.providerLocation.updateMany({ where: { id: d.id, providerId: provider.id }, data });
+      // providerId in the WHERE makes sure a provider can only edit their own rows
+      await db.update(t.providerLocations).set(data).where(and(eq(t.providerLocations.id, d.id), eq(t.providerLocations.providerId, provider.id)));
     } else {
-      const count = await prisma.providerLocation.count({ where: { providerId: provider.id } });
+      const count = await db.$count(t.providerLocations, eq(t.providerLocations.providerId, provider.id));
       if (count >= features.maxLocations) return { error: `Your plan allows ${features.maxLocations} location(s). Upgrade to add more.` };
-      await prisma.providerLocation.create({ data: { ...data, providerId: provider.id, isPrimary: count === 0, sortOrder: count } });
+      await db.insert(t.providerLocations).values({ ...data, providerId: provider.id, isPrimary: count === 0, sortOrder: count });
     }
     // Keep the provider's main city in sync with the primary location
-    const primary = await prisma.providerLocation.findFirst({ where: { providerId: provider.id, isPrimary: true } });
-    if (primary?.cityId) await prisma.provider.update({ where: { id: provider.id }, data: { cityId: primary.cityId } });
+    const primary = await db.query.providerLocations.findFirst({ where: and(eq(t.providerLocations.providerId, provider.id), eq(t.providerLocations.isPrimary, true)) });
+    if (primary?.cityId) await db.update(t.providers).set({ cityId: primary.cityId }).where(eq(t.providers.id, provider.id));
     return doneFor(provider.slug, "Location saved");
   } catch (e) {
     return err(e);
@@ -151,16 +170,18 @@ export async function saveLocation(_: ActionState, fd: FormData): Promise<Action
 
 export async function deleteLocation(id: number) {
   const { provider } = await ctx();
-  await prisma.providerLocation.deleteMany({ where: { id, providerId: provider.id } });
-  const left = await prisma.providerLocation.findMany({ where: { providerId: provider.id }, orderBy: { sortOrder: "asc" } });
-  if (left.length && !left.some((l) => l.isPrimary)) await prisma.providerLocation.update({ where: { id: left[0].id }, data: { isPrimary: true } });
+  await db.delete(t.providerLocations).where(and(eq(t.providerLocations.id, id), eq(t.providerLocations.providerId, provider.id)));
+  const left = await db.query.providerLocations.findMany({ where: eq(t.providerLocations.providerId, provider.id), orderBy: [asc(t.providerLocations.sortOrder)] });
+  if (left.length && !left.some((l) => l.isPrimary)) await db.update(t.providerLocations).set({ isPrimary: true }).where(eq(t.providerLocations.id, left[0].id));
   return doneFor(provider.slug, "Location removed");
 }
 
 export async function makePrimaryLocation(id: number) {
   const { provider } = await ctx();
-  await prisma.providerLocation.updateMany({ where: { providerId: provider.id }, data: { isPrimary: false } });
-  await prisma.providerLocation.updateMany({ where: { id, providerId: provider.id }, data: { isPrimary: true } });
+  await db.transaction(async (tx) => {
+    await tx.update(t.providerLocations).set({ isPrimary: false }).where(eq(t.providerLocations.providerId, provider.id));
+    await tx.update(t.providerLocations).set({ isPrimary: true }).where(and(eq(t.providerLocations.id, id), eq(t.providerLocations.providerId, provider.id)));
+  });
   return doneFor(provider.slug, "Primary location updated");
 }
 
@@ -169,13 +190,15 @@ export async function makePrimaryLocation(id: number) {
 export async function addGalleryImages(urls: string[]) {
   try {
     const { provider, features } = await ctx();
-    const count = await prisma.galleryImage.count({ where: { providerId: provider.id } });
+    const count = await db.$count(t.galleryImages, eq(t.galleryImages.providerId, provider.id));
     const room = features.maxPhotos - count;
     if (room <= 0) return { error: `Your plan allows ${features.maxPhotos} photos. Upgrade to add more.` };
     // Only allow the provider's own uploads (or seed images) to be attached
-    const own = await prisma.media.findMany({ where: { providerId: provider.id, url: { in: urls } }, select: { url: true, alt: true } });
+    const own = urls.length
+      ? await db.query.media.findMany({ where: and(eq(t.media.providerId, provider.id), inArray(t.media.url, urls)), columns: { url: true, alt: true } })
+      : [];
     const list = own.slice(0, room);
-    await prisma.galleryImage.createMany({ data: list.map((m, i) => ({ providerId: provider.id, url: m.url, alt: m.alt, sortOrder: count + i })) });
+    if (list.length) await db.insert(t.galleryImages).values(list.map((m, i) => ({ providerId: provider.id, url: m.url, alt: m.alt, sortOrder: count + i })));
     return doneFor(provider.slug, list.length < urls.length ? `Added ${list.length} photo(s) — plan limit reached.` : "Photos added");
   } catch (e) {
     return err(e);
@@ -184,24 +207,27 @@ export async function addGalleryImages(urls: string[]) {
 
 export async function removeGalleryImage(id: number) {
   const { provider } = await ctx();
-  await prisma.galleryImage.deleteMany({ where: { id, providerId: provider.id } });
+  await db.delete(t.galleryImages).where(and(eq(t.galleryImages.id, id), eq(t.galleryImages.providerId, provider.id)));
   return doneFor(provider.slug, "Photo removed");
 }
 
 export async function moveGalleryImage(id: number, dir: -1 | 1) {
   const { provider } = await ctx();
-  const list = await prisma.galleryImage.findMany({ where: { providerId: provider.id }, orderBy: { sortOrder: "asc" } });
+  const list = await db.query.galleryImages.findMany({ where: eq(t.galleryImages.providerId, provider.id), orderBy: [asc(t.galleryImages.sortOrder)] });
   const i = list.findIndex((g) => g.id === id);
   const j = i + dir;
   if (i < 0 || j < 0 || j >= list.length) return doneFor(provider.slug);
   [list[i], list[j]] = [list[j], list[i]];
-  await prisma.$transaction(list.map((g, idx) => prisma.galleryImage.update({ where: { id: g.id }, data: { sortOrder: idx } })));
+  // Rewrite every sortOrder (0, 1, 2…) in one transaction
+  await db.transaction(async (tx) => {
+    for (const [idx, g] of list.entries()) await tx.update(t.galleryImages).set({ sortOrder: idx }).where(eq(t.galleryImages.id, g.id));
+  });
   return doneFor(provider.slug, "Order updated");
 }
 
 export async function updateGalleryAlt(id: number, alt: string) {
   const { provider } = await ctx();
-  await prisma.galleryImage.updateMany({ where: { id, providerId: provider.id }, data: { alt: alt.slice(0, 190) } });
+  await db.update(t.galleryImages).set({ alt: alt.slice(0, 190) }).where(and(eq(t.galleryImages.id, id), eq(t.galleryImages.providerId, provider.id)));
   return doneFor(provider.slug, "Alt text saved");
 }
 
@@ -218,11 +244,11 @@ export async function saveFaq(_: ActionState, fd: FormData): Promise<ActionState
     const { provider, features } = await ctx();
     const d = faqSchema.parse(Object.fromEntries(fd));
     if (d.id) {
-      await prisma.providerFaq.updateMany({ where: { id: d.id, providerId: provider.id }, data: { question: d.question, answer: d.answer } });
+      await db.update(t.providerFaqs).set({ question: d.question, answer: d.answer }).where(and(eq(t.providerFaqs.id, d.id), eq(t.providerFaqs.providerId, provider.id)));
     } else {
-      const count = await prisma.providerFaq.count({ where: { providerId: provider.id } });
+      const count = await db.$count(t.providerFaqs, eq(t.providerFaqs.providerId, provider.id));
       if (count >= features.maxFaqs) return { error: `Your plan allows ${features.maxFaqs} FAQs. Upgrade for unlimited FAQs.` };
-      await prisma.providerFaq.create({ data: { providerId: provider.id, question: d.question, answer: d.answer, sortOrder: count } });
+      await db.insert(t.providerFaqs).values({ providerId: provider.id, question: d.question, answer: d.answer, sortOrder: count });
     }
     return doneFor(provider.slug, "FAQ saved");
   } catch (e) {
@@ -232,7 +258,7 @@ export async function saveFaq(_: ActionState, fd: FormData): Promise<ActionState
 
 export async function deleteFaq(id: number) {
   const { provider } = await ctx();
-  await prisma.providerFaq.deleteMany({ where: { id, providerId: provider.id } });
+  await db.delete(t.providerFaqs).where(and(eq(t.providerFaqs.id, id), eq(t.providerFaqs.providerId, provider.id)));
   return doneFor(provider.slug, "FAQ deleted");
 }
 
@@ -250,7 +276,10 @@ export async function saveAvailability(_: ActionState, fd: FormData): Promise<Ac
       hours[d.key] = { open, close, closed };
     }
     const slot = Number(fd.get("slotMinutes")) || 30;
-    await prisma.provider.update({ where: { id: provider.id }, data: { officeHours: hours, slotMinutes: [15, 20, 30, 45, 60, 90].includes(slot) ? slot : 30, acceptingNewPatients: fd.get("acceptingNewPatients") === "on" } });
+    await db
+      .update(t.providers)
+      .set({ officeHours: hours, slotMinutes: [15, 20, 30, 45, 60, 90].includes(slot) ? slot : 30, acceptingNewPatients: fd.get("acceptingNewPatients") === "on" })
+      .where(eq(t.providers.id, provider.id));
     return doneFor(provider.slug, "Availability saved");
   } catch (e) {
     return err(e);
@@ -261,19 +290,22 @@ export async function saveAvailability(_: ActionState, fd: FormData): Promise<Ac
 
 export async function updateAppointment(id: number, status: "NEW" | "CONFIRMED" | "CANCELLED" | "COMPLETED", note?: string) {
   const { provider } = await ctx();
-  await prisma.appointmentRequest.updateMany({ where: { id, providerId: provider.id }, data: { status, ...(note !== undefined ? { providerNote: note } : {}) } });
+  await db
+    .update(t.appointmentRequests)
+    .set({ status, ...(note !== undefined ? { providerNote: note } : {}) })
+    .where(and(eq(t.appointmentRequests.id, id), eq(t.appointmentRequests.providerId, provider.id)));
   return done("Appointment updated");
 }
 
 export async function markMessage(id: number, read: boolean) {
   const { provider } = await ctx();
-  await prisma.providerMessage.updateMany({ where: { id, providerId: provider.id }, data: { read } });
+  await db.update(t.providerMessages).set({ read }).where(and(eq(t.providerMessages.id, id), eq(t.providerMessages.providerId, provider.id)));
   return done(read ? "Marked as read" : "Marked as unread");
 }
 
 export async function deleteMessage(id: number) {
   const { provider } = await ctx();
-  await prisma.providerMessage.deleteMany({ where: { id, providerId: provider.id } });
+  await db.delete(t.providerMessages).where(and(eq(t.providerMessages.id, id), eq(t.providerMessages.providerId, provider.id)));
   return done("Message deleted");
 }
 
@@ -283,7 +315,7 @@ export async function deleteMessage(id: number) {
 export async function saveMediaLinks(_: ActionState, fd: FormData): Promise<ActionState> {
   try {
     const { provider, features } = await ctx();
-    const data: Record<string, string | null> = {};
+    const data: Partial<Pick<NewProvider, "videoUrl" | (typeof SOCIAL_FIELDS)[number]["key"]>> = {};
     if (features.allowVideo) {
       const intro = str(fd, "videoUrl");
       if (intro && parseVideo(intro)?.kind === "unknown") return { error: "Intro video must be a YouTube/Vimeo link or an uploaded video file." };
@@ -298,7 +330,7 @@ export async function saveMediaLinks(_: ActionState, fd: FormData): Promise<Acti
       }
     }
     if (!Object.keys(data).length) return { error: "Upgrade your plan to add videos and social links." };
-    await prisma.provider.update({ where: { id: provider.id }, data });
+    await db.update(t.providers).set(data).where(eq(t.providers.id, provider.id));
     revalidatePath(`/provider/${provider.slug}`);
     return doneFor(provider.slug, "Saved");
   } catch (e) {
@@ -322,11 +354,11 @@ export async function saveVideo(_: ActionState, fd: FormData): Promise<ActionSta
     if (!info || info.kind === "unknown") return { error: "Use a YouTube or Vimeo link, or upload an MP4/WebM video." };
     const data = { title: d.title, url: d.url, thumbnail: d.thumbnail || info.thumbnail };
     if (d.id) {
-      await prisma.providerVideo.updateMany({ where: { id: d.id, providerId: provider.id }, data });
+      await db.update(t.providerVideos).set(data).where(and(eq(t.providerVideos.id, d.id), eq(t.providerVideos.providerId, provider.id)));
     } else {
-      const count = await prisma.providerVideo.count({ where: { providerId: provider.id } });
+      const count = await db.$count(t.providerVideos, eq(t.providerVideos.providerId, provider.id));
       if (count >= features.maxVideos) return { error: features.maxVideos ? `Your plan allows ${features.maxVideos} videos.` : "Upgrade your plan to add a video gallery." };
-      await prisma.providerVideo.create({ data: { ...data, providerId: provider.id, sortOrder: count } });
+      await db.insert(t.providerVideos).values({ ...data, providerId: provider.id, sortOrder: count });
     }
     revalidatePath(`/provider/${provider.slug}`);
     return doneFor(provider.slug, "Video saved");
@@ -337,18 +369,21 @@ export async function saveVideo(_: ActionState, fd: FormData): Promise<ActionSta
 
 export async function deleteVideo(id: number) {
   const { provider } = await ctx();
-  await prisma.providerVideo.deleteMany({ where: { id, providerId: provider.id } });
+  await db.delete(t.providerVideos).where(and(eq(t.providerVideos.id, id), eq(t.providerVideos.providerId, provider.id)));
   return doneFor(provider.slug, "Video removed");
 }
 
 export async function moveVideo(id: number, dir: -1 | 1) {
   const { provider } = await ctx();
-  const list = await prisma.providerVideo.findMany({ where: { providerId: provider.id }, orderBy: { sortOrder: "asc" } });
+  const list = await db.query.providerVideos.findMany({ where: eq(t.providerVideos.providerId, provider.id), orderBy: [asc(t.providerVideos.sortOrder)] });
   const i = list.findIndex((v) => v.id === id);
   const j = i + dir;
   if (i < 0 || j < 0 || j >= list.length) return doneFor(provider.slug);
   [list[i], list[j]] = [list[j], list[i]];
-  await prisma.$transaction(list.map((v, idx) => prisma.providerVideo.update({ where: { id: v.id }, data: { sortOrder: idx } })));
+  // Rewrite every sortOrder (0, 1, 2…) in one transaction
+  await db.transaction(async (tx) => {
+    for (const [idx, v] of list.entries()) await tx.update(t.providerVideos).set({ sortOrder: idx }).where(eq(t.providerVideos.id, v.id));
+  });
   return doneFor(provider.slug, "Order updated");
 }
 
@@ -361,17 +396,18 @@ export async function saveAccount(_: ActionState, fd: FormData): Promise<ActionS
     const email = String(fd.get("email") ?? "").trim().toLowerCase();
     if (name.length < 2) return { error: "Enter your name" };
     if (!z.email().safeParse(email).success) return { error: "Enter a valid email" };
-    const other = await prisma.user.findFirst({ where: { email, id: { not: user.id } } });
+    const other = await db.query.users.findFirst({ where: and(eq(t.users.email, email), ne(t.users.id, user.id)), columns: { id: true } });
     if (other) return { error: "That email is already used by another account" };
     const data: { name: string; email: string; passwordHash?: string } = { name, email };
     const newPass = String(fd.get("newPassword") ?? "");
     if (newPass) {
-      const full = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+      const full = await db.query.users.findFirst({ where: eq(t.users.id, user.id) });
+      if (!full) return { error: "Account not found" };
       if (!(await verifyPassword(String(fd.get("currentPassword") ?? ""), full.passwordHash))) return { error: "Current password is incorrect" };
       if (newPass.length < 8) return { error: "New password must be at least 8 characters" };
       data.passwordHash = await hashPassword(newPass);
     }
-    await prisma.user.update({ where: { id: user.id }, data });
+    await db.update(t.users).set(data).where(eq(t.users.id, user.id));
     return done("Account updated");
   } catch (e) {
     return err(e);

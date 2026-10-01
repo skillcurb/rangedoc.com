@@ -18,7 +18,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, BadgeCheck, Check, Clock, Globe, HelpCircle, MapPin, Settings2, ShieldCheck, Star, Stethoscope, Target, UserRoundCheck, Users } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, asc, desc, avg, count, pluck } from "@/lib/db";
 import { buildMetadata } from "@/lib/seo";
 import { providerFeatures } from "@/lib/plans";
 import { DAYS, formatTime, parseHours } from "@/lib/hours";
@@ -41,20 +41,30 @@ type Props = { params: Promise<{ slug: string }> };
 
 /** Load everything the profile needs in one query */
 async function getProvider(slug: string) {
-  return prisma.provider.findUnique({
-    where: { slug },
-    include: {
+  const p = await db.query.providers.findFirst({
+    where: eq(t.providers.slug, slug),
+    with: {
       plan: true,
       city: true,
-      conditions: { orderBy: { sortOrder: "asc" } },
-      specialties: { orderBy: { sortOrder: "asc" } },
-      insurances: { orderBy: { sortOrder: "asc" } },
-      locations: { orderBy: [{ isPrimary: "desc" }, { sortOrder: "asc" }] },
-      gallery: { orderBy: { sortOrder: "asc" } },
-      videos: { orderBy: { sortOrder: "asc" } },
-      faqs: { orderBy: { sortOrder: "asc" } },
+      // Many-to-many → join rows ({ conditionId, condition: {…} }), flattened below
+      conditions: { with: { condition: true } },
+      specialties: { with: { specialty: true } },
+      insurances: { with: { insurance: true } },
+      locations: { orderBy: [desc(t.providerLocations.isPrimary), asc(t.providerLocations.sortOrder)] },
+      gallery: { orderBy: [asc(t.galleryImages.sortOrder)] },
+      videos: { orderBy: [asc(t.providerVideos.sortOrder)] },
+      faqs: { orderBy: [asc(t.providerFaqs.sortOrder)] },
     },
   });
+  if (!p) return undefined;
+  // Join rows can't be ordered by the linked table in SQL → pluck + sort by sortOrder here
+  const bySort = (a: { sortOrder: number }, b: { sortOrder: number }) => a.sortOrder - b.sortOrder;
+  return {
+    ...p,
+    conditions: pluck(p.conditions, "condition").sort(bySort),
+    specialties: pluck(p.specialties, "specialty").sort(bySort),
+    insurances: pluck(p.insurances, "insurance").sort(bySort),
+  };
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
@@ -92,9 +102,13 @@ export default async function ProviderProfilePage({ params }: Props) {
   const claimed = p.claimStatus === "CLAIMED";
 
   // Rating: provider-set rating (paid) or average of approved reviews
-  const reviewAgg = features.allowReviews ? await prisma.review.aggregate({ where: { providerId: p.id, status: "APPROVED" }, _avg: { rating: true }, _count: { _all: true } }) : null;
-  const rating = features.allowRatingDisplay && p.displayRating ? p.displayRating : reviewAgg?._avg.rating ?? null;
-  const ratingCount = features.allowRatingDisplay && p.displayRating ? p.displayReviewCount ?? reviewAgg?._count._all ?? 0 : reviewAgg?._count._all ?? 0;
+  const reviewAgg = features.allowReviews
+    ? (await db.select({ avg: avg(t.reviews.rating), n: count() }).from(t.reviews).where(and(eq(t.reviews.providerId, p.id), eq(t.reviews.status, "APPROVED"))))[0]
+    : null;
+  // avg() comes back from MySQL as a string (or null when there are no reviews)
+  const reviewAvg = reviewAgg?.avg != null ? Number(reviewAgg.avg) : null;
+  const rating = features.allowRatingDisplay && p.displayRating ? p.displayRating : reviewAvg ?? null;
+  const ratingCount = features.allowRatingDisplay && p.displayRating ? p.displayReviewCount ?? reviewAgg?.n ?? 0 : reviewAgg?.n ?? 0;
 
   const contactLocations = locations.map((l) => ({ id: l.id, name: l.name, address: `${l.address}, ${l.cityName}` }));
   const insuranceNames = p.insurances.map((i) => i.name);
@@ -272,9 +286,9 @@ export default async function ProviderProfilePage({ params }: Props) {
 
         {/* ───────── Section tabs ───────── */}
         <nav className="no-scrollbar sticky top-16 z-20 -mx-4 mt-6 flex gap-6 overflow-x-auto border-b border-line bg-surface/95 px-4 backdrop-blur" aria-label="Profile sections">
-          {TABS.map((t) => (
-            <a key={t.id} href={`#${t.id}`} className="shrink-0 border-b-2 border-transparent py-3 text-sm font-medium text-navy-800 hover:border-brand-600 hover:text-brand-700">
-              {t.label}
+          {TABS.map((tab) => (
+            <a key={tab.id} href={`#${tab.id}`} className="shrink-0 border-b-2 border-transparent py-3 text-sm font-medium text-navy-800 hover:border-brand-600 hover:text-brand-700">
+              {tab.label}
             </a>
           ))}
         </nav>
@@ -425,7 +439,7 @@ export default async function ProviderProfilePage({ params }: Props) {
 
 /** Ratings summary + approved reviews (streams in separately) */
 async function ReviewsSection({ providerId, rating, ratingCount, source, endorsement, allowReviews }: { providerId: number; rating: number | null; ratingCount: number; source: string | null; endorsement: string | null; allowReviews: boolean }) {
-  const reviews = allowReviews ? await prisma.review.findMany({ where: { providerId, status: "APPROVED" }, orderBy: { createdAt: "desc" }, take: 10 }) : [];
+  const reviews = allowReviews ? await db.query.reviews.findMany({ where: and(eq(t.reviews.providerId, providerId), eq(t.reviews.status, "APPROVED")), orderBy: [desc(t.reviews.createdAt)], limit: 10 }) : [];
   const highlight = reviews.find((r) => r.rating >= 4);
   return (
     <>

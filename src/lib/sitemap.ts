@@ -14,7 +14,7 @@
 import "server-only";
 import crypto from "node:crypto";
 import type { MetadataRoute } from "next";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, asc } from "@/lib/db";
 import { getSettings, saveSettingsGroup } from "@/lib/settings";
 import { SEO_PAGES } from "@/lib/seo";
 import { siteUrl } from "@/lib/utils";
@@ -24,15 +24,25 @@ const abs = (u: string | null | undefined) => (u ? (u.startsWith("http") ? u : s
 /** Build every sitemap entry (with lastmod and image URLs for Google Images) */
 export async function buildSitemap(): Promise<MetadataRoute.Sitemap> {
   const [seo, providers, conditions, cities, posts, cats, tags, products, pages] = await Promise.all([
-    prisma.pageSeo.findMany({ select: { pageKey: true, noIndex: true } }),
-    prisma.provider.findMany({ where: { status: "ACTIVE" }, select: { slug: true, updatedAt: true, photo: true, gallery: { select: { url: true }, take: 10 } } }),
-    prisma.condition.findMany({ where: { active: true }, select: { slug: true, image: true } }),
-    prisma.city.findMany({ where: { active: true }, select: { slug: true, image: true } }),
-    prisma.blogPost.findMany({ where: { published: true }, select: { slug: true, updatedAt: true, coverImage: true } }),
-    prisma.blogCategory.findMany({ select: { slug: true } }),
-    prisma.blogTag.findMany({ select: { slug: true } }),
-    prisma.product.findMany({ where: { active: true }, select: { slug: true, updatedAt: true, image: true } }),
-    prisma.cmsPage.findMany({ where: { published: true }, select: { slug: true, updatedAt: true, heroImage: true } }),
+    db.select({ pageKey: t.pageSeo.pageKey, noIndex: t.pageSeo.noIndex }).from(t.pageSeo),
+    db.query.providers.findMany({
+      where: eq(t.providers.status, "ACTIVE"),
+      columns: { slug: true, updatedAt: true, photo: true },
+      with: { gallery: { columns: { url: true }, orderBy: [asc(t.galleryImages.id)], limit: 10 } },
+    }),
+    db.select({ slug: t.conditions.slug, image: t.conditions.image }).from(t.conditions).where(eq(t.conditions.active, true)),
+    db.select({ slug: t.cities.slug, image: t.cities.image }).from(t.cities).where(eq(t.cities.active, true)),
+    db
+      .select({ slug: t.blogPosts.slug, updatedAt: t.blogPosts.updatedAt, coverImage: t.blogPosts.coverImage })
+      .from(t.blogPosts)
+      .where(eq(t.blogPosts.published, true)),
+    db.select({ slug: t.blogCategories.slug }).from(t.blogCategories),
+    db.select({ slug: t.blogTags.slug }).from(t.blogTags),
+    db.select({ slug: t.products.slug, updatedAt: t.products.updatedAt, image: t.products.image }).from(t.products).where(eq(t.products.active, true)),
+    db
+      .select({ slug: t.cmsPages.slug, updatedAt: t.cmsPages.updatedAt, heroImage: t.cmsPages.heroImage })
+      .from(t.cmsPages)
+      .where(eq(t.cmsPages.published, true)),
   ]);
   const hidden = new Set(seo.filter((s) => s.noIndex).map((s) => s.pageKey));
   // Fixed pages that are worth indexing (login, cart… are excluded)
@@ -49,7 +59,7 @@ export async function buildSitemap(): Promise<MetadataRoute.Sitemap> {
     ...cities.map((c) => ({ url: siteUrl(`/locations/${c.slug}`), changeFrequency: "weekly" as const, priority: 0.7, images: img(c.image) })),
     ...posts.map((p) => ({ url: siteUrl(`/blog/${p.slug}`), lastModified: p.updatedAt, changeFrequency: "monthly" as const, priority: 0.6, images: img(p.coverImage) })),
     ...cats.map((c) => ({ url: siteUrl(`/blog/category/${c.slug}`), changeFrequency: "weekly" as const, priority: 0.4 })),
-    ...tags.map((t) => ({ url: siteUrl(`/blog/tag/${t.slug}`), changeFrequency: "weekly" as const, priority: 0.3 })),
+    ...tags.map((tag) => ({ url: siteUrl(`/blog/tag/${tag.slug}`), changeFrequency: "weekly" as const, priority: 0.3 })),
     ...products.map((p) => ({ url: siteUrl(`/products/${p.slug}`), lastModified: p.updatedAt, changeFrequency: "weekly" as const, priority: 0.5, images: img(p.image) })),
     ...pages.map((p) => ({ url: siteUrl(`/${p.slug}`), lastModified: p.updatedAt, changeFrequency: "monthly" as const, priority: 0.3, images: img(p.heroImage) })),
   ];
@@ -93,17 +103,15 @@ export async function onContentChanged(paths: string[] = ["/"]) {
   try {
     const entries = await buildSitemap();
     const ping = await submitIndexNow([...paths, "/sitemap.xml"]).catch((e) => ({ sent: false as const, reason: String(e) }));
-    await prisma.setting.upsert({
-      where: { key: "sitemap_state" },
-      create: { key: "sitemap_state", value: { updatedAt: new Date().toISOString(), urlCount: entries.length, lastPaths: paths.slice(0, 20), lastPing: ping } },
-      update: { value: { updatedAt: new Date().toISOString(), urlCount: entries.length, lastPaths: paths.slice(0, 20), lastPing: ping } },
-    });
+    const value = { updatedAt: new Date().toISOString(), urlCount: entries.length, lastPaths: paths.slice(0, 20), lastPing: ping };
+    // Upsert: insert, or overwrite the value when the key already exists
+    await db.insert(t.settings).values({ key: "sitemap_state", value }).onDuplicateKeyUpdate({ set: { value } });
   } catch (e) {
     console.error("[sitemap]", e);
   }
 }
 
 export async function getSitemapState() {
-  const row = await prisma.setting.findUnique({ where: { key: "sitemap_state" } });
+  const row = await db.query.settings.findFirst({ where: eq(t.settings.key, "sitemap_state") });
   return (row?.value ?? null) as null | { updatedAt: string; urlCount: number; lastPaths: string[]; lastPing: { sent: boolean; reason?: string } };
 }

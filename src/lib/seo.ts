@@ -1,13 +1,13 @@
 /**
  * SEO helpers – build Next.js `Metadata` objects.
  * ------------------------------------------------------------------
- * Fixed pages (home, search, claim, …) read their tags from the PageSeo
+ * Fixed pages (home, search, claim, …) read their tags from the page_seo
  * table, editable in Admin → SEO. Dynamic pages (provider, blog post,
  * product, city, condition) pass their own fields.
  */
 import "server-only";
 import type { Metadata } from "next";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { siteUrl, splitList } from "@/lib/utils";
 
@@ -82,7 +82,7 @@ export async function buildMetadata(input: SeoInput): Promise<Metadata> {
 
 /** Metadata for a fixed page – reads Admin → SEO values with fallbacks */
 export async function pageMetadata(pageKey: string, fallback: { title: string; description?: string }): Promise<Metadata> {
-  const seo = await prisma.pageSeo.findUnique({ where: { pageKey } }).catch(() => null);
+  const seo = await db.query.pageSeo.findFirst({ where: eq(t.pageSeo.pageKey, pageKey) }).catch(() => null);
   const page = SEO_PAGES.find((p) => p.key === pageKey);
   return buildMetadata({
     title: seo?.metaTitle || fallback.title,

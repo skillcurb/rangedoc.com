@@ -2,7 +2,7 @@
  * Site header (server component) – loads menu data from the database and
  * hands it to the interactive <HeaderNav> client component.
  */
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, asc } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { getCurrentUser } from "@/lib/auth";
 import { HeaderNav, type MenuGroup } from "@/components/site/HeaderNav";
@@ -10,11 +10,11 @@ import { HeaderNav, type MenuGroup } from "@/components/site/HeaderNav";
 export async function Header() {
   const [settings, conditions, cities, productCats, blogCats, helpPage, user] = await Promise.all([
     getSettings(),
-    prisma.condition.findMany({ where: { active: true }, orderBy: { sortOrder: "asc" }, take: 10, select: { name: true, slug: true } }),
-    prisma.city.findMany({ where: { active: true, featured: true }, orderBy: { sortOrder: "asc" }, take: 6, select: { name: true, stateCode: true, slug: true } }),
-    prisma.productCategory.findMany({ orderBy: { sortOrder: "asc" }, take: 8, select: { name: true, slug: true } }),
-    prisma.blogCategory.findMany({ orderBy: { name: "asc" }, take: 6, select: { name: true, slug: true } }),
-    prisma.cmsPage.findFirst({ where: { slug: "help-center", published: true }, select: { slug: true } }),
+    db.query.conditions.findMany({ where: eq(t.conditions.active, true), orderBy: [asc(t.conditions.sortOrder)], limit: 10, columns: { name: true, slug: true } }),
+    db.query.cities.findMany({ where: and(eq(t.cities.active, true), eq(t.cities.featured, true)), orderBy: [asc(t.cities.sortOrder)], limit: 6, columns: { name: true, stateCode: true, slug: true } }),
+    db.query.productCategories.findMany({ orderBy: [asc(t.productCategories.sortOrder)], limit: 8, columns: { name: true, slug: true } }),
+    db.query.blogCategories.findMany({ orderBy: [asc(t.blogCategories.name)], limit: 6, columns: { name: true, slug: true } }),
+    db.query.cmsPages.findFirst({ where: and(eq(t.cmsPages.slug, "help-center"), eq(t.cmsPages.published, true)), columns: { slug: true } }),
     getCurrentUser(),
   ]);
 

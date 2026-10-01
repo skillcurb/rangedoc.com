@@ -6,7 +6,7 @@
  */
 import Link from "next/link";
 import { ArrowRight, MapPin, Users } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, asc, desc, pluck } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { AppImage } from "@/components/ui/AppImage";
 import { Icon } from "@/components/ui/Icon";
@@ -18,7 +18,7 @@ import { PROVIDER_TYPE_LABEL, TYPE_ENUM_TO_PARAM, providerName } from "@/lib/uti
 
 /** Trust badges under the hero search ("Licensed professionals", …) – Admin → Content blocks: home_hero_badges */
 export async function HeroBadges() {
-  const items = await prisma.contentBlock.findMany({ where: { section: "home_hero_badges", active: true }, orderBy: { sortOrder: "asc" } });
+  const items = await db.query.contentBlocks.findMany({ where: and(eq(t.contentBlocks.section, "home_hero_badges"), eq(t.contentBlocks.active, true)), orderBy: [asc(t.contentBlocks.sortOrder)] });
   return (
     <ul className="mt-4 flex flex-wrap gap-x-6 gap-y-2">
       {items.map((b) => (
@@ -32,7 +32,7 @@ export async function HeroBadges() {
 
 /** Stats strip under the hero – Admin → Content blocks: home_stats */
 export async function StatsStrip() {
-  const items = await prisma.contentBlock.findMany({ where: { section: "home_stats", active: true }, orderBy: { sortOrder: "asc" } });
+  const items = await db.query.contentBlocks.findMany({ where: and(eq(t.contentBlocks.section, "home_stats"), eq(t.contentBlocks.active, true)), orderBy: [asc(t.contentBlocks.sortOrder)] });
   if (!items.length) return null;
   return (
     <section className="relative border-b border-line bg-white">
@@ -55,7 +55,7 @@ export async function StatsStrip() {
 export async function WhereDoesItHurt() {
   const [s, conditions] = await Promise.all([
     getSettings(),
-    prisma.condition.findMany({ where: { active: true, showOnHome: true }, orderBy: { sortOrder: "asc" } }),
+    db.query.conditions.findMany({ where: and(eq(t.conditions.active, true), eq(t.conditions.showOnHome, true)), orderBy: [asc(t.conditions.sortOrder)] }),
   ]);
   return (
     <section className="bg-gradient-to-b from-surface to-white py-12">
@@ -85,7 +85,7 @@ export async function WhereDoesItHurt() {
 export async function PopularWays() {
   const [s, items] = await Promise.all([
     getSettings(),
-    prisma.popularSearch.findMany({ where: { active: true }, orderBy: { sortOrder: "asc" }, include: { condition: true, specialty: true } }),
+    db.query.popularSearches.findMany({ where: eq(t.popularSearches.active, true), orderBy: [asc(t.popularSearches.sortOrder)], with: { condition: true, specialty: true } }),
   ]);
   if (!items.length) return null;
   return (
@@ -118,7 +118,7 @@ export async function PopularWays() {
 export async function FindCareNearYou() {
   const [s, cities] = await Promise.all([
     getSettings(),
-    prisma.city.findMany({ where: { active: true, featured: true }, orderBy: { sortOrder: "asc" }, take: 5 }),
+    db.query.cities.findMany({ where: and(eq(t.cities.active, true), eq(t.cities.featured, true)), orderBy: [asc(t.cities.sortOrder)], limit: 5 }),
   ]);
   return (
     <section className="py-12">
@@ -152,14 +152,15 @@ export async function FindCareNearYou() {
 export async function FeaturedProviders() {
   const [s, providers] = await Promise.all([
     getSettings(),
-    prisma.provider.findMany({
-      where: { featured: true, status: "ACTIVE" },
-      orderBy: [{ featuredOrder: "asc" }, { id: "asc" }],
-      take: 6,
-      include: {
+    db.query.providers.findMany({
+      where: and(eq(t.providers.featured, true), eq(t.providers.status, "ACTIVE")),
+      orderBy: [asc(t.providers.featuredOrder), asc(t.providers.id)],
+      limit: 6,
+      with: {
         city: true,
-        conditions: { select: { name: true }, orderBy: { sortOrder: "asc" }, take: 3 },
-        specialties: { select: { name: true }, take: 2 },
+        // Many-to-many → join rows; the condition sort + "first 3" happens below
+        conditions: { with: { condition: { columns: { name: true, sortOrder: true } } } },
+        specialties: { with: { specialty: { columns: { name: true } } }, limit: 2 },
       },
     }),
   ]);
@@ -183,8 +184,8 @@ export async function FeaturedProviders() {
                 typeLabel: p.headline || PROVIDER_TYPE_LABEL[p.providerType],
                 photo: p.photo,
                 licenseVerified: p.licenseVerified,
-                conditions: p.conditions.map((c) => c.name),
-                specialties: p.specialties.map((x) => x.name),
+                conditions: pluck(p.conditions, "condition").sort((a, b) => a.sortOrder - b.sortOrder).slice(0, 3).map((c) => c.name),
+                specialties: pluck(p.specialties, "specialty").map((x) => x.name),
                 city: p.city ? `${p.city.name}, ${p.city.stateCode}` : "",
                 education: p.education,
               }}
@@ -200,11 +201,11 @@ export async function FeaturedProviders() {
 export async function HelpfulResources() {
   const [s, posts] = await Promise.all([
     getSettings(),
-    prisma.blogPost.findMany({
-      where: { published: true, featured: true },
-      orderBy: { publishedAt: "desc" },
-      take: 3,
-      select: { slug: true, title: true, excerpt: true, coverImage: true, coverAlt: true, publishedAt: true, readingMinutes: true },
+    db.query.blogPosts.findMany({
+      where: and(eq(t.blogPosts.published, true), eq(t.blogPosts.featured, true)),
+      orderBy: [desc(t.blogPosts.publishedAt)],
+      limit: 3,
+      columns: { slug: true, title: true, excerpt: true, coverImage: true, coverAlt: true, publishedAt: true, readingMinutes: true },
     }),
   ]);
   if (!posts.length) return null;

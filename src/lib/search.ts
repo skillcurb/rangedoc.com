@@ -16,8 +16,8 @@
  * Elasticsearch) – the public API of this file can stay the same.
  */
 import "server-only";
-import type { Prisma } from "@/generated/prisma/client";
-import { prisma } from "@/lib/prisma";
+import type { SQL } from "drizzle-orm";
+import { db, t, eq, and, or, like, inArray, between, asc, desc, avg, count, pluck } from "@/lib/db";
 import { boundingBox, distanceMiles } from "@/lib/geo";
 import { hasActivePaidPlan, providerFeatures, rankTier } from "@/lib/plans";
 import { PROVIDER_TYPE_LABEL, TYPE_PARAM_TO_ENUM, providerName, splitList } from "@/lib/utils";
@@ -128,7 +128,10 @@ export function parseSearchParams(sp: Record<string, string | string[] | undefin
 
 /** Find the closest active city to a point (used to label the visitor's location) */
 export async function findNearestCity(lat: number, lng: number) {
-  const cities = await prisma.city.findMany({ where: { active: true }, select: { id: true, name: true, stateCode: true, slug: true, lat: true, lng: true } });
+  const cities = await db.query.cities.findMany({
+    where: eq(t.cities.active, true),
+    columns: { id: true, name: true, stateCode: true, slug: true, lat: true, lng: true },
+  });
   let best: (typeof cities)[number] | null = null;
   let bestD = Infinity;
   for (const c of cities) {
@@ -152,18 +155,20 @@ export async function searchProviders(input: SearchInput): Promise<SearchOutput>
   if (input.lat != null && input.lng != null) {
     center = { lat: input.lat, lng: input.lng, label: input.loc || "Your location", citySlug: input.city ?? null };
   } else if (input.city) {
-    const city = await prisma.city.findUnique({ where: { slug: input.city } });
+    const city = await db.query.cities.findFirst({ where: eq(t.cities.slug, input.city) });
     if (city) center = { lat: city.lat, lng: city.lng, label: `${city.name}, ${city.stateCode}`, citySlug: city.slug };
   }
 
   // ---- 2. Text query → matching conditions / specialties -----------
-  const where: Prisma.ProviderWhereInput = { status: "ACTIVE" };
+  // WHERE conditions for the candidate query, combined with AND at the end
+  const P = t.providers;
+  const where: (SQL | undefined)[] = [eq(P.status, "ACTIVE")];
   const q = input.q?.toLowerCase();
   let queryConditionIds: number[] = [];
   if (q) {
     const [conds, specs] = await Promise.all([
-      prisma.condition.findMany({ where: { active: true }, select: { id: true, name: true, slug: true, keywords: true } }),
-      prisma.specialty.findMany({ select: { id: true, name: true } }),
+      db.query.conditions.findMany({ where: eq(t.conditions.active, true), columns: { id: true, name: true, slug: true, keywords: true } }),
+      db.query.specialties.findMany({ columns: { id: true, name: true } }),
     ]);
     // A condition matches when the query mentions it ("lower back pain" → "Back Pain")
     // or one of its keywords, or the other way round ("back" → "Back Pain").
@@ -174,52 +179,83 @@ export async function searchProviders(input: SearchInput): Promise<SearchOutput>
       })
       .map((c) => c.id);
     const specIds = specs.filter((s) => q.includes(s.name.toLowerCase()) || s.name.toLowerCase().includes(q)).map((s) => s.id);
-    where.OR = [
-      { firstName: { contains: input.q } },
-      { lastName: { contains: input.q } },
-      { practiceName: { contains: input.q } },
-      { headline: { contains: input.q } },
-      ...(queryConditionIds.length ? [{ conditions: { some: { id: { in: queryConditionIds } } } }] : []),
-      ...(specIds.length ? [{ specialties: { some: { id: { in: specIds } } } }] : []),
-    ];
+    // MySQL's default collation is case-insensitive, so LIKE ignores case
+    const text = `%${input.q}%`;
+    const anyOf: (SQL | undefined)[] = [like(P.firstName, text), like(P.lastName, text), like(P.practiceName, text), like(P.headline, text)];
+    // "Has one of these conditions / specialties" = provider id is in the join table subquery
+    if (queryConditionIds.length) {
+      anyOf.push(
+        inArray(
+          P.id,
+          db.select({ id: t.providerConditions.providerId }).from(t.providerConditions).where(inArray(t.providerConditions.conditionId, queryConditionIds)),
+        ),
+      );
+    }
+    if (specIds.length) {
+      anyOf.push(
+        inArray(
+          P.id,
+          db.select({ id: t.providerSpecialties.providerId }).from(t.providerSpecialties).where(inArray(t.providerSpecialties.specialtyId, specIds)),
+        ),
+      );
+    }
     // Whole name search, e.g. "Sarah Kim"
     const words = input.q!.split(/\s+/);
-    if (words.length >= 2) where.OR.push({ AND: [{ firstName: { contains: words[0] } }, { lastName: { contains: words[words.length - 1] } }] });
+    if (words.length >= 2) anyOf.push(and(like(P.firstName, `%${words[0]}%`), like(P.lastName, `%${words[words.length - 1]}%`)));
+    where.push(or(...anyOf));
   }
 
   // Location pre-filter: bounding box big enough for the largest distance bucket
   if (center && radius > 0) {
     const box = boundingBox(center.lat, center.lng, Math.max(radius, 50));
-    where.locations = { some: { lat: { gte: box.minLat, lte: box.maxLat }, lng: { gte: box.minLng, lte: box.maxLng } } };
+    const L = t.providerLocations;
+    // Provider has at least one location inside the box (uses the lat/lng index)
+    where.push(
+      inArray(
+        P.id,
+        db
+          .select({ id: L.providerId })
+          .from(L)
+          .where(and(between(L.lat, box.minLat, box.maxLat), between(L.lng, box.minLng, box.maxLng))),
+      ),
+    );
   }
-  if (input.telehealth) where.telehealth = true;
-  if (input.newPatients) where.acceptingNewPatients = true;
-  if (input.verified) where.licenseVerified = true;
-  if (input.gender) where.gender = input.gender;
+  if (input.telehealth) where.push(eq(P.telehealth, true));
+  if (input.newPatients) where.push(eq(P.acceptingNewPatients, true));
+  if (input.verified) where.push(eq(P.licenseVerified, true));
+  if (input.gender) where.push(eq(P.gender, input.gender));
 
   // ---- 3. Candidates (light-weight select) -------------------------
-  const candidates = await prisma.provider.findMany({
-    where,
-    select: {
-      id: true,
-      providerType: true,
-      claimStatus: true,
-      planExpiresAt: true,
-      displayRating: true,
+  const candidateRows = await db.query.providers.findMany({
+    where: and(...where),
+    columns: { id: true, providerType: true, claimStatus: true, planExpiresAt: true, displayRating: true },
+    with: {
       plan: true,
-      locations: { select: { lat: true, lng: true, isPrimary: true, sortOrder: true } },
-      conditions: { select: { id: true } },
-      insurances: { select: { id: true } },
-      specialties: { select: { id: true } },
+      locations: { columns: { lat: true, lng: true, isPrimary: true, sortOrder: true } },
+      // Many-to-many: only the linked ids are needed here (join table rows)
+      conditions: { columns: { conditionId: true } },
+      insurances: { columns: { insuranceId: true } },
+      specialties: { columns: { specialtyId: true } },
     },
-    take: 5000, // safety cap
+    limit: 5000, // safety cap
   });
+  // Turn join rows into [{ id }] lists so the filter/facet code below stays simple
+  const candidates = candidateRows.map((c) => ({
+    ...c,
+    conditions: c.conditions.map((x) => ({ id: x.conditionId })),
+    insurances: c.insurances.map((x) => ({ id: x.insuranceId })),
+    specialties: c.specialties.map((x) => ({ id: x.specialtyId })),
+  }));
 
   // Map slugs → ids for the sidebar filters
   const [allConditions, allInsurances, allSpecialties] = await Promise.all([
-    prisma.condition.findMany({ where: { active: true }, select: { id: true, slug: true, name: true }, orderBy: { sortOrder: "asc" } }),
-    prisma.insurance.findMany({ select: { id: true, slug: true, name: true }, orderBy: { sortOrder: "asc" } }),
-    prisma.specialty.findMany({ select: { id: true, slug: true, name: true }, orderBy: { sortOrder: "asc" } }),
+    db.query.conditions.findMany({
+      where: eq(t.conditions.active, true),
+      columns: { id: true, slug: true, name: true },
+      orderBy: [asc(t.conditions.sortOrder)],
+    }),
+    db.query.insurances.findMany({ columns: { id: true, slug: true, name: true }, orderBy: [asc(t.insurances.sortOrder)] }),
+    db.query.specialties.findMany({ columns: { id: true, slug: true, name: true }, orderBy: [asc(t.specialties.sortOrder)] }),
   ]);
   const idsFor = (list: { id: number; slug: string }[], slugs?: string[]) => list.filter((x) => slugs?.includes(x.slug)).map((x) => x.id);
   const condIds = idsFor(allConditions, input.condition);
@@ -228,15 +264,16 @@ export async function searchProviders(input: SearchInput): Promise<SearchOutput>
   const typeEnum = input.type ? TYPE_PARAM_TO_ENUM[input.type] : undefined;
 
   // Review averages (approved reviews) for rating sort / display
+  const R = t.reviews;
   const reviewStats = candidates.length
-    ? await prisma.review.groupBy({
-        by: ["providerId"],
-        where: { status: "APPROVED", providerId: { in: candidates.map((c) => c.id) } },
-        _avg: { rating: true },
-        _count: { _all: true },
-      })
+    ? await db
+        .select({ providerId: R.providerId, avg: avg(R.rating), n: count() })
+        .from(R)
+        .where(and(eq(R.status, "APPROVED"), inArray(R.providerId, candidates.map((c) => c.id))))
+        .groupBy(R.providerId)
     : [];
-  const reviewMap = new Map(reviewStats.map((r) => [r.providerId, { avg: r._avg.rating ?? 0, count: r._count._all }]));
+  // avg() comes back from MySQL as a string (DECIMAL) → Number()
+  const reviewMap = new Map(reviewStats.map((r) => [r.providerId, { avg: Number(r.avg ?? 0), count: Number(r.n) }]));
 
   // Distance for every candidate (closest of its locations)
   type Scored = (typeof candidates)[number] & { distance: number | null; tier: number; match: number; rating: number };
@@ -304,19 +341,27 @@ export async function searchProviders(input: SearchInput): Promise<SearchOutput>
   const pageItems = filtered.slice((page - 1) * pageSize, page * pageSize);
 
   // ---- 5. Load full card data for this page --------------------------
-  const full = pageItems.length
-    ? await prisma.provider.findMany({
-        where: { id: { in: pageItems.map((p) => p.id) } },
-        include: {
+  const fullRows = pageItems.length
+    ? await db.query.providers.findMany({
+        where: inArray(P.id, pageItems.map((p) => p.id)),
+        with: {
           plan: true,
           city: true,
-          conditions: { select: { id: true, name: true }, orderBy: { sortOrder: "asc" } },
-          insurances: { select: { name: true }, orderBy: { sortOrder: "asc" } },
-          locations: { orderBy: [{ isPrimary: "desc" }, { sortOrder: "asc" }] },
+          conditions: { with: { condition: { columns: { id: true, name: true, sortOrder: true } } } },
+          insurances: { with: { insurance: { columns: { name: true, sortOrder: true } } } },
+          locations: { orderBy: [desc(t.providerLocations.isPrimary), asc(t.providerLocations.sortOrder)] },
         },
       })
     : [];
-  const freePlan = await prisma.plan.findFirst({ where: { isFree: true, active: true } });
+  // Flatten the many-to-many join rows; they can't be ordered by the
+  // linked table in SQL, so sort by sortOrder here
+  const bySort = (a: { sortOrder: number }, b: { sortOrder: number }) => a.sortOrder - b.sortOrder;
+  const full = fullRows.map((f) => ({
+    ...f,
+    conditions: pluck(f.conditions, "condition").sort(bySort),
+    insurances: pluck(f.insurances, "insurance").sort(bySort),
+  }));
+  const freePlan = await db.query.plans.findFirst({ where: and(eq(t.plans.isFree, true), eq(t.plans.active, true)) });
   const byId = new Map(full.map((f) => [f.id, f]));
   const wantedConditionIds = [...new Set([...condIds, ...queryConditionIds])];
 

@@ -5,7 +5,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Check, ShieldCheck, Truck } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, ne, and, isNull } from "@/lib/db";
 import { buildMetadata } from "@/lib/seo";
 import { getSettings } from "@/lib/settings";
 import { formatMoney, jsonStringArray, siteUrl, splitList, stripHtml, truncate } from "@/lib/utils";
@@ -17,7 +17,7 @@ import { ProductCard, QuantityAddToCart } from "@/components/products/ProductPar
 type Props = { params: Promise<{ slug: string }> };
 
 async function getProduct(slug: string) {
-  return prisma.product.findUnique({ where: { slug }, include: { category: true } });
+  return db.query.products.findFirst({ where: eq(t.products.slug, slug), with: { category: true } });
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
@@ -37,7 +37,12 @@ export default async function ProductPage({ params }: Props) {
   if (!p || !p.active) notFound();
   const s = await getSettings();
   const images = [p.image, ...jsonStringArray(p.images)].filter((x, i, a): x is string => !!x && a.indexOf(x) === i);
-  const related = await prisma.product.findMany({ where: { active: true, categoryId: p.categoryId, id: { not: p.id } }, include: { category: true }, take: 4 });
+  const related = await db.query.products.findMany({
+    // Same category (or also uncategorised when this product has none)
+    where: and(eq(t.products.active, true), p.categoryId == null ? isNull(t.products.categoryId) : eq(t.products.categoryId, p.categoryId), ne(t.products.id, p.id)),
+    with: { category: true },
+    limit: 4,
+  });
   const card = { id: p.id, slug: p.slug, name: p.name, shortDescription: p.shortDescription, priceCents: p.priceCents, compareAtCents: p.compareAtCents, image: p.image, category: p.category?.name ?? null, inStock: p.stock == null || p.stock > 0 };
 
   const jsonLd = {

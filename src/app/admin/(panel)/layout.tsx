@@ -2,7 +2,7 @@
  * ADMIN PANEL layout ( /admin/* ) – sidebar built from the resource list.
  */
 import type { Metadata } from "next";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, inArray } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
 import { getSettings } from "@/lib/settings";
 import { logoutAction } from "@/lib/actions/auth";
@@ -15,11 +15,11 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   const user = await requireAdmin();
   const [settings, pendingClaims, pendingReviews, pendingComments, newContacts, pendingOrders] = await Promise.all([
     getSettings(),
-    prisma.provider.count({ where: { claimStatus: "PENDING" } }),
-    prisma.review.count({ where: { status: "PENDING" } }),
-    prisma.blogComment.count({ where: { status: "PENDING" } }),
-    prisma.contactMessage.count({ where: { read: false } }),
-    prisma.order.count({ where: { status: { in: ["PAID", "PROCESSING"] } } }),
+    db.$count(t.providers, eq(t.providers.claimStatus, "PENDING")),
+    db.$count(t.reviews, eq(t.reviews.status, "PENDING")),
+    db.$count(t.blogComments, eq(t.blogComments.status, "PENDING")),
+    db.$count(t.contactMessages, eq(t.contactMessages.read, false)),
+    db.$count(t.orders, inArray(t.orders.status, ["PAID", "PROCESSING"])),
   ]);
   const badges: Record<string, number> = { reviews: pendingReviews, comments: pendingComments, contacts: newContacts, orders: pendingOrders };
 

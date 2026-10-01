@@ -4,7 +4,7 @@
  */
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq } from "@/lib/db";
 import { buildMetadata } from "@/lib/seo";
 import { formatDate, stripHtml, truncate } from "@/lib/utils";
 import { AppImage } from "@/components/ui/AppImage";
@@ -12,13 +12,13 @@ import { AppImage } from "@/components/ui/AppImage";
 type Props = { params: Promise<{ slug: string }> };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const page = await prisma.cmsPage.findUnique({ where: { slug: (await params).slug } });
+  const page = await db.query.cmsPages.findFirst({ where: eq(t.cmsPages.slug, (await params).slug) });
   if (!page || !page.published) return { title: "Page not found" };
   return buildMetadata({ title: page.metaTitle || page.title, description: page.metaDescription || page.excerpt || truncate(stripHtml(page.content), 160), keywords: page.metaKeywords, image: page.ogImage || page.heroImage, path: `/${page.slug}` });
 }
 
 export default async function CmsPage({ params }: Props) {
-  const page = await prisma.cmsPage.findUnique({ where: { slug: (await params).slug } });
+  const page = await db.query.cmsPages.findFirst({ where: eq(t.cmsPages.slug, (await params).slug) });
   if (!page || !page.published) notFound();
   return (
     <div>

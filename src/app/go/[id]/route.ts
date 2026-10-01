@@ -4,14 +4,14 @@
  * our source/UTM parameters, so the provider can see visits from us.
  */
 import { NextResponse, type NextRequest } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq } from "@/lib/db";
 import { recordEvents } from "@/lib/analytics";
 import { getSettings } from "@/lib/settings";
 import { slugify } from "@/lib/utils";
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const provider = await prisma.provider.findUnique({ where: { id: Number(id) }, select: { id: true, website: true } });
+  const provider = await db.query.providers.findFirst({ where: eq(t.providers.id, Number(id)), columns: { id: true, website: true } });
   if (!provider?.website) return NextResponse.redirect(new URL("/search", request.url));
 
   const settings = await getSettings();

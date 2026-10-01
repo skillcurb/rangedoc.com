@@ -9,7 +9,7 @@
  */
 import { cookies, headers } from "next/headers";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, inArray, sql, isDuplicateKey } from "@/lib/db";
 import { recordEvents } from "@/lib/analytics";
 import { emailLayout, esc, sendMail } from "@/lib/email";
 import { verifyCaptcha } from "@/lib/captcha";
@@ -50,33 +50,37 @@ export async function requestAppointment(_: ActionResult | null, formData: FormD
   const parsed = appointmentSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const d = parsed.data;
-  const provider = await prisma.provider.findUnique({ where: { id: d.providerId }, include: { user: true } });
+  const provider = await db.query.providers.findFirst({ where: eq(t.providers.id, d.providerId), with: { user: true } });
   if (!provider) return fail("Provider not found");
 
   // Don't allow double-booking the same slot
-  const clash = await prisma.appointmentRequest.findFirst({
-    where: { providerId: d.providerId, date: new Date(`${d.date}T00:00:00.000Z`), timeSlot: d.timeSlot, status: { in: ["NEW", "CONFIRMED"] } },
+  const clash = await db.query.appointmentRequests.findFirst({
+    where: and(
+      eq(t.appointmentRequests.providerId, d.providerId),
+      eq(t.appointmentRequests.date, new Date(`${d.date}T00:00:00.000Z`)),
+      eq(t.appointmentRequests.timeSlot, d.timeSlot),
+      inArray(t.appointmentRequests.status, ["NEW", "CONFIRMED"]),
+    ),
+    columns: { id: true },
   });
   if (clash) return fail("Sorry, that time was just taken. Please choose another.");
 
   const ctx = await visitorCtx();
-  await prisma.appointmentRequest.create({
-    data: {
-      providerId: d.providerId,
-      locationId: d.locationId,
-      date: new Date(`${d.date}T00:00:00.000Z`),
-      timeSlot: d.timeSlot,
-      firstName: d.firstName,
-      lastName: d.lastName,
-      email: d.email,
-      phone: d.phone,
-      dateOfBirth: d.dateOfBirth || null,
-      isNewPatient: d.isNewPatient !== "no",
-      insurance: d.insurance || null,
-      reason: d.reason || null,
-      preferredContact: d.preferredContact ?? null,
-      visitorId: ctx.visitorId,
-    },
+  await db.insert(t.appointmentRequests).values({
+    providerId: d.providerId,
+    locationId: d.locationId,
+    date: new Date(`${d.date}T00:00:00.000Z`),
+    timeSlot: d.timeSlot,
+    firstName: d.firstName,
+    lastName: d.lastName,
+    email: d.email,
+    phone: d.phone,
+    dateOfBirth: d.dateOfBirth || null,
+    isNewPatient: d.isNewPatient !== "no",
+    insurance: d.insurance || null,
+    reason: d.reason || null,
+    preferredContact: d.preferredContact ?? null,
+    visitorId: ctx.visitorId,
   });
   await recordEvents([{ type: "APPOINTMENT_SUBMIT", providerId: d.providerId, path: `/provider/${provider.slug}` }], ctx).catch(() => undefined);
 
@@ -119,11 +123,11 @@ export async function sendProviderMessage(_: ActionResult | null, formData: Form
   const parsed = messageSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const d = parsed.data;
-  const provider = await prisma.provider.findUnique({ where: { id: d.providerId }, include: { user: true } });
+  const provider = await db.query.providers.findFirst({ where: eq(t.providers.id, d.providerId), with: { user: true } });
   if (!provider) return fail("Provider not found");
 
   const ctx = await visitorCtx();
-  await prisma.providerMessage.create({ data: { providerId: d.providerId, name: d.name, contact: d.contact, subject: d.subject, message: d.message, visitorId: ctx.visitorId } });
+  await db.insert(t.providerMessages).values({ providerId: d.providerId, name: d.name, contact: d.contact, subject: d.subject, message: d.message, visitorId: ctx.visitorId });
   await recordEvents([{ type: "EMAIL_SUBMIT", providerId: d.providerId, path: `/provider/${provider.slug}` }], ctx).catch(() => undefined);
 
   const to = provider.email || provider.user?.email;
@@ -153,18 +157,24 @@ export async function submitReview(_: ActionResult | null, formData: FormData): 
   const parsed = reviewSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const d = parsed.data;
-  const provider = await prisma.provider.findUnique({ where: { id: d.providerId }, include: { plan: true } });
+  const provider = await db.query.providers.findFirst({ where: eq(t.providers.id, d.providerId), with: { plan: true } });
   if (!provider) return fail("Provider not found");
   // Reviews are a paid-plan feature
   if (!providerFeatures(provider, await getFreePlan()).allowReviews) return fail("Reviews are not available for this provider.");
 
   const ctx = await visitorCtx();
   if (ctx.visitorId) {
-    const already = await prisma.review.count({ where: { providerId: d.providerId, visitorId: ctx.visitorId } });
+    const already = await db.$count(t.reviews, and(eq(t.reviews.providerId, d.providerId), eq(t.reviews.visitorId, ctx.visitorId)));
     if (already) return fail("You have already reviewed this provider.");
   }
-  await prisma.review.create({
-    data: { providerId: d.providerId, rating: d.rating, authorName: d.authorName, authorEmail: d.authorEmail || null, title: d.title || null, body: d.body, visitorId: ctx.visitorId },
+  await db.insert(t.reviews).values({
+    providerId: d.providerId,
+    rating: d.rating,
+    authorName: d.authorName,
+    authorEmail: d.authorEmail || null,
+    title: d.title || null,
+    body: d.body,
+    visitorId: ctx.visitorId,
   });
   return { ok: true, message: "Thank you! Your review will appear after moderation." };
 }
@@ -185,7 +195,7 @@ export async function submitContact(_: ActionResult | null, formData: FormData):
   const parsed = contactSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const d = parsed.data;
-  await prisma.contactMessage.create({ data: { ...d, phone: d.phone || null } });
+  await db.insert(t.contactMessages).values({ ...d, phone: d.phone || null });
   const s = await getSettings();
   const to = s.email.adminNotifyEmail || s.general.contactEmail;
   if (to) {
@@ -213,7 +223,7 @@ export async function submitBlogComment(_: ActionResult | null, formData: FormDa
   const parsed = commentSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const { website: _hp, ...data } = parsed.data;
-  await prisma.blogComment.create({ data });
+  await db.insert(t.blogComments).values(data);
   return { ok: true, message: "Thanks! Your comment will appear after approval." };
 }
 
@@ -221,18 +231,36 @@ export async function rateBlogPost(postId: number, rating: number): Promise<Acti
   if (!Number.isInteger(rating) || rating < 1 || rating > 5) return fail("Invalid rating");
   const ctx = await visitorCtx();
   if (!ctx.visitorId) return fail("Please enable cookies to rate articles.");
-  const existing = await prisma.blogRating.findUnique({ where: { postId_visitorId: { postId, visitorId: ctx.visitorId } } });
-  if (existing) {
-    await prisma.$transaction([
-      prisma.blogRating.update({ where: { id: existing.id }, data: { rating } }),
-      prisma.blogPost.update({ where: { id: postId }, data: { ratingSum: { increment: rating - existing.rating } } }),
-    ]);
-  } else {
-    await prisma.$transaction([
-      prisma.blogRating.create({ data: { postId, visitorId: ctx.visitorId, rating } }),
-      prisma.blogPost.update({ where: { id: postId }, data: { ratingSum: { increment: rating }, ratingCount: { increment: 1 } } }),
-    ]);
+  const visitorId = ctx.visitorId;
+
+  // One rating per post + visitor (unique index). A repeat vote replaces the
+  // old one, and the post's running totals (ratingSum / ratingCount) are
+  // adjusted in the same transaction.
+  const save = () =>
+    db.transaction(async (tx) => {
+      const existing = await tx.query.blogRatings.findFirst({ where: and(eq(t.blogRatings.postId, postId), eq(t.blogRatings.visitorId, visitorId)) });
+      if (existing) {
+        await tx.update(t.blogRatings).set({ rating }).where(eq(t.blogRatings.id, existing.id));
+        await tx
+          .update(t.blogPosts)
+          .set({ ratingSum: sql`${t.blogPosts.ratingSum} + ${rating - existing.rating}` })
+          .where(eq(t.blogPosts.id, postId));
+      } else {
+        await tx.insert(t.blogRatings).values({ postId, visitorId, rating });
+        await tx
+          .update(t.blogPosts)
+          .set({ ratingSum: sql`${t.blogPosts.ratingSum} + ${rating}`, ratingCount: sql`${t.blogPosts.ratingCount} + 1` })
+          .where(eq(t.blogPosts.id, postId));
+      }
+    });
+  try {
+    await save();
+  } catch (e) {
+    // Two clicks at the same moment: the second insert hits the unique key.
+    // Run again – this time the existing rating is found and updated.
+    if (!isDuplicateKey(e)) throw e;
+    await save();
   }
-  const post = await prisma.blogPost.findUnique({ where: { id: postId }, select: { ratingSum: true, ratingCount: true } });
+  const post = await db.query.blogPosts.findFirst({ where: eq(t.blogPosts.id, postId), columns: { ratingSum: true, ratingCount: true } });
   return { ok: true, avg: post && post.ratingCount ? post.ratingSum / post.ratingCount : rating, count: post?.ratingCount ?? 1 };
 }

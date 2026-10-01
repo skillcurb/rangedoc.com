@@ -1,6 +1,6 @@
 /** DASHBOARD → REVIEWS ( /dashboard/reviews ) – paid feature */
 import Link from "next/link";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, desc, avg, count } from "@/lib/db";
 import { getDashboard } from "@/lib/dashboard";
 import { formatDate } from "@/lib/utils";
 import { PageHeader, Panel, StatusBadge, UpgradeNotice } from "@/components/panel/PanelUi";
@@ -12,19 +12,24 @@ export const metadata = { title: "Reviews" };
 export default async function ReviewsPage() {
   const { provider, features } = await getDashboard();
   if (!features.allowReviews) return <UpgradeNotice feature="Patient reviews" text="Collect reviews from patients, show your star rating and stand out in search results." />;
-  const [reviews, agg] = await Promise.all([
-    prisma.review.findMany({ where: { providerId: provider.id }, orderBy: { createdAt: "desc" } }),
-    prisma.review.aggregate({ where: { providerId: provider.id, status: "APPROVED" }, _avg: { rating: true }, _count: { _all: true } }),
+  const [reviews, [agg]] = await Promise.all([
+    db.query.reviews.findMany({ where: eq(t.reviews.providerId, provider.id), orderBy: [desc(t.reviews.createdAt)] }),
+    // Average + count of approved reviews (AVG comes back as a string, or null when there are none)
+    db
+      .select({ avg: avg(t.reviews.rating), n: count() })
+      .from(t.reviews)
+      .where(and(eq(t.reviews.providerId, provider.id), eq(t.reviews.status, "APPROVED"))),
   ]);
+  const avgRating = agg?.avg != null ? Number(agg.avg) : 0;
   return (
     <div className="space-y-6">
       <PageHeader title="Reviews" subtitle="New reviews are checked by our team before they appear on your profile." />
       <div className="grid gap-4 sm:grid-cols-3">
         <Panel title="Average rating">
           <p className="flex items-center gap-2 text-3xl font-extrabold">
-            {(agg._avg.rating ?? 0).toFixed(1)} <Stars value={agg._avg.rating ?? 0} />
+            {avgRating.toFixed(1)} <Stars value={avgRating} />
           </p>
-          <p className="text-sm text-muted">{agg._count._all} approved reviews</p>
+          <p className="text-sm text-muted">{agg?.n ?? 0} approved reviews</p>
         </Panel>
         <Panel title="Displayed rating" className="sm:col-span-2">
           <p className="text-sm text-navy-700">

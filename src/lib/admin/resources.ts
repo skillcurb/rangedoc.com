@@ -6,7 +6,7 @@
  * and quick actions. The generic pages in /admin/r/[resource] and the
  * server actions in src/lib/admin/actions.ts use these definitions.
  *
- * To add a new admin section: add a Prisma model, then add a resource
+ * To add a new admin section: add a table to src/db/schema.ts, then add a resource
  * entry below – no new page code needed.
  *
  * This file contains plain data only (no functions) so it can be sent
@@ -26,7 +26,7 @@ export type FieldDef = {
   placeholder?: string;
   /** select options (value/label) */
   options?: { value: string; label: string }[];
-  /** relation / relationMany: prisma model + label column */
+  /** relation / relationMany: table name (see src/db/schema.ts) + label column */
   relation?: { model: string; labelField: string; orderBy?: string };
   /** slug: generate from this field when left empty */
   from?: string;
@@ -43,14 +43,14 @@ export type FieldDef = {
 };
 
 export type ColumnDef = {
-  field: string; // supports dot paths: "category.name", "_count.providers"
+  field: string; // supports dot paths: "category.name", "_count.providers" (needs `counts`)
   label: string;
   type?: "text" | "image" | "boolean" | "badge" | "money" | "date" | "number" | "stars";
 };
 
 export type ResourceDef = {
   key: string;
-  model: string; // prisma client property
+  model: string; // Drizzle table name exported from src/db/schema.ts, e.g. "providers"
   label: string;
   singular: string;
   icon: string;
@@ -60,8 +60,10 @@ export type ResourceDef = {
   columns: ColumnDef[];
   searchFields: string[];
   orderBy: Record<string, "asc" | "desc">[];
-  /** Prisma include for the list query (for relation columns) */
-  include?: Record<string, unknown>;
+  /** Drizzle `with` for the list query (relation columns), e.g. { city: { columns: { name: true } } } */
+  with?: Record<string, unknown>;
+  /** Related rows to count for "_count.x" columns, e.g. ["providers"] (see COUNTS in src/lib/admin/data.ts) */
+  counts?: string[];
   filters?: { field: string; label: string; options: { value: string; label: string }[] }[];
   /** One-click actions in the list, e.g. Approve → status=APPROVED */
   quickActions?: { label: string; field: string; value: string | boolean; tone?: "green" | "red" }[];
@@ -97,13 +99,13 @@ export const RESOURCES: ResourceDef[] = [
   // ============ Directory ============
   {
     key: "providers",
-    model: "provider",
+    model: "providers",
     label: "Providers",
     singular: "Provider",
     icon: "Stethoscope",
     group: "Directory",
     viewPath: "/provider/{slug}",
-    include: { city: { select: { name: true, stateCode: true } }, plan: { select: { name: true } } },
+    with: { city: { columns: { name: true, stateCode: true } }, plan: { columns: { name: true } } },
     columns: [
       { field: "photo", label: "", type: "image" },
       { field: "firstName", label: "First" },
@@ -157,18 +159,18 @@ export const RESOURCES: ResourceDef[] = [
       { name: "licenseNumber", label: "License number", type: "text" },
       { name: "licenseState", label: "License state", type: "text" },
       { name: "responseTime", label: "Response time note", type: "text" },
-      { name: "conditions", label: "Conditions treated", type: "relationMany", relation: { model: "condition", labelField: "name", orderBy: "sortOrder" }, wide: true },
-      { name: "specialties", label: "Treatment specialties", type: "relationMany", relation: { model: "specialty", labelField: "name", orderBy: "sortOrder" }, wide: true },
-      { name: "insurances", label: "Insurance accepted", type: "relationMany", relation: { model: "insurance", labelField: "name", orderBy: "sortOrder" }, wide: true },
+      { name: "conditions", label: "Conditions treated", type: "relationMany", relation: { model: "conditions", labelField: "name", orderBy: "sortOrder" }, wide: true },
+      { name: "specialties", label: "Treatment specialties", type: "relationMany", relation: { model: "specialties", labelField: "name", orderBy: "sortOrder" }, wide: true },
+      { name: "insurances", label: "Insurance accepted", type: "relationMany", relation: { model: "insurances", labelField: "name", orderBy: "sortOrder" }, wide: true },
       { name: "status", label: "Status", type: "select", options: opt("ACTIVE", "INACTIVE"), group: "side", defaultValue: "ACTIVE" },
       { name: "claimStatus", label: "Claim status", type: "select", options: opt("UNCLAIMED", "PENDING", "CLAIMED"), group: "side", defaultValue: "UNCLAIMED" },
       { name: "claimNote", label: "Claim note", type: "textarea", group: "side", readOnly: true },
       { name: "licenseVerified", label: "License verified", type: "boolean", group: "side" },
-      { name: "planId", label: "Plan", type: "relation", relation: { model: "plan", labelField: "name", orderBy: "sortOrder" }, group: "side" },
+      { name: "planId", label: "Plan", type: "relation", relation: { model: "plans", labelField: "name", orderBy: "sortOrder" }, group: "side" },
       { name: "planExpiresAt", label: "Plan expires", type: "datetime", group: "side", help: "Empty = never", nullable: true },
       { name: "featured", label: "Featured on home page", type: "boolean", group: "side" },
       { name: "featuredOrder", label: "Featured order", type: "number", group: "side" },
-      { name: "cityId", label: "Main city", type: "relation", relation: { model: "city", labelField: "name", orderBy: "name" }, group: "side" },
+      { name: "cityId", label: "Main city", type: "relation", relation: { model: "cities", labelField: "name", orderBy: "name" }, group: "side" },
       { name: "acceptingNewPatients", label: "Accepting new patients", type: "boolean", group: "side", defaultValue: true },
       { name: "inPerson", label: "In-person", type: "boolean", group: "side", defaultValue: true },
       { name: "telehealth", label: "Telehealth", type: "boolean", group: "side" },
@@ -182,12 +184,12 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "locations",
-    model: "providerLocation",
+    model: "providerLocations",
     label: "Provider Locations",
     singular: "Location",
     icon: "MapPin",
     group: "Directory",
-    include: { provider: { select: { firstName: true, lastName: true } } },
+    with: { provider: { columns: { firstName: true, lastName: true } } },
     columns: [
       { field: "name", label: "Name" },
       { field: "provider.firstName+provider.lastName", label: "Provider" },
@@ -198,11 +200,11 @@ export const RESOURCES: ResourceDef[] = [
     searchFields: ["name", "address", "cityName", "zip"],
     orderBy: [{ id: "desc" }],
     fields: [
-      { name: "providerId", label: "Provider", type: "relation", relation: { model: "provider", labelField: "firstName+lastName", orderBy: "lastName" }, required: true },
+      { name: "providerId", label: "Provider", type: "relation", relation: { model: "providers", labelField: "firstName+lastName", orderBy: "lastName" }, required: true },
       { name: "name", label: "Location name", type: "text", required: true },
       { name: "address", label: "Street address", type: "text", required: true },
       { name: "address2", label: "Suite / floor", type: "text" },
-      { name: "cityId", label: "City", type: "relation", relation: { model: "city", labelField: "name", orderBy: "name" } },
+      { name: "cityId", label: "City", type: "relation", relation: { model: "cities", labelField: "name", orderBy: "name" } },
       { name: "cityName", label: "City name (display)", type: "text", required: true },
       { name: "state", label: "State code", type: "text", required: true },
       { name: "zip", label: "ZIP", type: "text", required: true },
@@ -214,14 +216,14 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "cities",
-    model: "city",
+    model: "cities",
     label: "Cities",
     singular: "City",
     icon: "Building2",
     group: "Directory",
     description: "The site is city based. Add cities with their map position; featured cities appear in “Find Care Near You”.",
     viewPath: "/locations/{slug}",
-    include: { _count: { select: { providers: true } } },
+    counts: ["providers"],
     columns: [
       { field: "image", label: "", type: "image" },
       { field: "name", label: "City" },
@@ -251,14 +253,14 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "conditions",
-    model: "condition",
+    model: "conditions",
     label: "Conditions / Pain Areas",
     singular: "Condition",
     icon: "Activity",
     group: "Directory",
     description: "Shown in “Where does it hurt?”, search suggestions and filters.",
     viewPath: "/conditions/{slug}",
-    include: { _count: { select: { providers: true } } },
+    counts: ["providers"],
     columns: [
       { field: "image", label: "", type: "image" },
       { field: "name", label: "Name" },
@@ -284,7 +286,7 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "specialties",
-    model: "specialty",
+    model: "specialties",
     label: "Treatments / Specialties",
     singular: "Specialty",
     icon: "Sparkles",
@@ -301,7 +303,7 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "insurances",
-    model: "insurance",
+    model: "insurances",
     label: "Insurances",
     singular: "Insurance",
     icon: "ShieldCheck",
@@ -318,17 +320,17 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "faqs",
-    model: "providerFaq",
+    model: "providerFaqs",
     label: "Provider FAQs",
     singular: "FAQ",
     icon: "HelpCircle",
     group: "Directory",
-    include: { provider: { select: { firstName: true, lastName: true } } },
+    with: { provider: { columns: { firstName: true, lastName: true } } },
     columns: [{ field: "question", label: "Question" }, { field: "provider.firstName+provider.lastName", label: "Provider" }, { field: "sortOrder", label: "Order", type: "number" }],
     searchFields: ["question", "answer"],
     orderBy: [{ id: "desc" }],
     fields: [
-      { name: "providerId", label: "Provider", type: "relation", relation: { model: "provider", labelField: "firstName+lastName", orderBy: "lastName" }, required: true },
+      { name: "providerId", label: "Provider", type: "relation", relation: { model: "providers", labelField: "firstName+lastName", orderBy: "lastName" }, required: true },
       { name: "question", label: "Question", type: "text", required: true, wide: true },
       { name: "answer", label: "Answer", type: "textarea", required: true, wide: true },
       { name: "sortOrder", label: "Sort order", type: "number", group: "side" },
@@ -337,18 +339,18 @@ export const RESOURCES: ResourceDef[] = [
 
   {
     key: "videos",
-    model: "providerVideo",
+    model: "providerVideos",
     label: "Provider Videos",
     singular: "Video",
     icon: "Film",
     group: "Directory",
     description: "Video gallery items (YouTube / Vimeo links or uploaded videos). Shown for plans with a video gallery.",
-    include: { provider: { select: { firstName: true, lastName: true } } },
+    with: { provider: { columns: { firstName: true, lastName: true } } },
     columns: [{ field: "title", label: "Title" }, { field: "provider.firstName+provider.lastName", label: "Provider" }, { field: "url", label: "URL" }, { field: "sortOrder", label: "Order", type: "number" }],
     searchFields: ["title", "url"],
     orderBy: [{ id: "desc" }],
     fields: [
-      { name: "providerId", label: "Provider", type: "relation", relation: { model: "provider", labelField: "firstName+lastName", orderBy: "lastName" }, required: true },
+      { name: "providerId", label: "Provider", type: "relation", relation: { model: "providers", labelField: "firstName+lastName", orderBy: "lastName" }, required: true },
       { name: "title", label: "Title", type: "text", required: true, wide: true },
       { name: "url", label: "Video (YouTube/Vimeo link or upload)", type: "file", accept: "video", required: true, wide: true },
       { name: "thumbnail", label: "Thumbnail (optional)", type: "image", group: "side" },
@@ -359,13 +361,13 @@ export const RESOURCES: ResourceDef[] = [
   // ============ Leads & moderation ============
   {
     key: "appointments",
-    model: "appointmentRequest",
+    model: "appointmentRequests",
     label: "Appointment Requests",
     singular: "Appointment",
     icon: "CalendarCheck",
     group: "Leads",
     canCreate: false,
-    include: { provider: { select: { firstName: true, lastName: true } } },
+    with: { provider: { columns: { firstName: true, lastName: true } } },
     columns: [
       { field: "date", label: "Date", type: "date" },
       { field: "timeSlot", label: "Time" },
@@ -393,13 +395,13 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "messages",
-    model: "providerMessage",
+    model: "providerMessages",
     label: "Provider Emails",
     singular: "Email",
     icon: "Mail",
     group: "Leads",
     canCreate: false,
-    include: { provider: { select: { firstName: true, lastName: true } } },
+    with: { provider: { columns: { firstName: true, lastName: true } } },
     columns: [
       { field: "name", label: "From" },
       { field: "contact", label: "Email / phone" },
@@ -420,12 +422,12 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "reviews",
-    model: "review",
+    model: "reviews",
     label: "Reviews",
     singular: "Review",
     icon: "Star",
     group: "Leads",
-    include: { provider: { select: { firstName: true, lastName: true } } },
+    with: { provider: { columns: { firstName: true, lastName: true } } },
     columns: [
       { field: "rating", label: "Rating", type: "stars" },
       { field: "title", label: "Title" },
@@ -442,7 +444,7 @@ export const RESOURCES: ResourceDef[] = [
       { label: "Reject", field: "status", value: "REJECTED", tone: "red" },
     ],
     fields: [
-      { name: "providerId", label: "Provider", type: "relation", relation: { model: "provider", labelField: "firstName+lastName", orderBy: "lastName" }, required: true },
+      { name: "providerId", label: "Provider", type: "relation", relation: { model: "providers", labelField: "firstName+lastName", orderBy: "lastName" }, required: true },
       { name: "authorName", label: "Author", type: "text", required: true },
       { name: "authorEmail", label: "Author email", type: "email" },
       { name: "rating", label: "Rating (1–5)", type: "number", required: true },
@@ -453,7 +455,7 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "contacts",
-    model: "contactMessage",
+    model: "contactMessages",
     label: "Contact Messages",
     singular: "Contact message",
     icon: "Inbox",
@@ -482,7 +484,7 @@ export const RESOURCES: ResourceDef[] = [
   // ============ Monetization ============
   {
     key: "plans",
-    model: "plan",
+    model: "plans",
     label: "Plans & Pricing",
     singular: "Plan",
     icon: "CreditCard",
@@ -530,14 +532,14 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "plan-orders",
-    model: "planOrder",
+    model: "planOrders",
     label: "Plan Orders",
     singular: "Plan order",
     icon: "Layers",
     group: "Sales",
     canCreate: false,
     description: "Marking an order as Paid activates the plan on the provider's profile.",
-    include: { plan: { select: { name: true } }, provider: { select: { firstName: true, lastName: true } } },
+    with: { plan: { columns: { name: true } }, provider: { columns: { firstName: true, lastName: true } } },
     columns: [
       { field: "orderNumber", label: "Order" },
       { field: "provider.firstName+provider.lastName", label: "Provider" },
@@ -564,13 +566,13 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "products",
-    model: "product",
+    model: "products",
     label: "Products",
     singular: "Product",
     icon: "Package",
     group: "Sales",
     viewPath: "/products/{slug}",
-    include: { category: { select: { name: true } } },
+    with: { category: { columns: { name: true } } },
     columns: [
       { field: "image", label: "", type: "image" },
       { field: "name", label: "Name" },
@@ -595,7 +597,7 @@ export const RESOURCES: ResourceDef[] = [
       { name: "description", label: "Full description", type: "richtext", wide: true },
       { name: "images", label: "Extra images", type: "images", wide: true },
       { name: "image", label: "Main image", type: "image", group: "side" },
-      { name: "categoryId", label: "Pain area / category", type: "relation", relation: { model: "productCategory", labelField: "name", orderBy: "sortOrder" }, group: "side" },
+      { name: "categoryId", label: "Pain area / category", type: "relation", relation: { model: "productCategories", labelField: "name", orderBy: "sortOrder" }, group: "side" },
       { name: "stock", label: "Stock (empty = unlimited)", type: "number", group: "side", nullable: true },
       { name: "active", label: "Active", type: "boolean", group: "side", defaultValue: true },
       { name: "featured", label: "Featured", type: "boolean", group: "side" },
@@ -605,12 +607,12 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "product-categories",
-    model: "productCategory",
+    model: "productCategories",
     label: "Product Categories",
     singular: "Product category",
     icon: "Tags",
     group: "Sales",
-    include: { _count: { select: { products: true } } },
+    counts: ["products"],
     columns: [{ field: "name", label: "Name" }, { field: "icon", label: "Icon" }, { field: "_count.products", label: "Products", type: "number" }, { field: "sortOrder", label: "Order", type: "number" }],
     searchFields: ["name"],
     orderBy: [{ sortOrder: "asc" }],
@@ -625,14 +627,14 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "orders",
-    model: "order",
+    model: "orders",
     label: "Product Orders",
     singular: "Order",
     icon: "ShoppingBag",
     group: "Sales",
     canCreate: false,
     editPath: "/admin/orders/{id}",
-    include: { _count: { select: { items: true } } },
+    counts: ["items"],
     columns: [
       { field: "orderNumber", label: "Order" },
       { field: "customerName", label: "Customer" },
@@ -652,13 +654,13 @@ export const RESOURCES: ResourceDef[] = [
   // ============ Content ============
   {
     key: "posts",
-    model: "blogPost",
+    model: "blogPosts",
     label: "Blog Posts",
     singular: "Post",
     icon: "BookOpen",
     group: "Content",
     viewPath: "/blog/{slug}",
-    include: { category: { select: { name: true } } },
+    with: { category: { columns: { name: true } } },
     columns: [
       { field: "coverImage", label: "", type: "image" },
       { field: "title", label: "Title" },
@@ -678,8 +680,8 @@ export const RESOURCES: ResourceDef[] = [
       { name: "content", label: "Content", type: "richtext", required: true, wide: true },
       { name: "coverImage", label: "Cover image", type: "image", group: "side" },
       { name: "coverAlt", label: "Cover alt text", type: "text", group: "side" },
-      { name: "categoryId", label: "Category", type: "relation", relation: { model: "blogCategory", labelField: "name", orderBy: "name" }, group: "side" },
-      { name: "tags", label: "Tags", type: "relationMany", relation: { model: "blogTag", labelField: "name", orderBy: "name" }, group: "side" },
+      { name: "categoryId", label: "Category", type: "relation", relation: { model: "blogCategories", labelField: "name", orderBy: "name" }, group: "side" },
+      { name: "tags", label: "Tags", type: "relationMany", relation: { model: "blogTags", labelField: "name", orderBy: "name" }, group: "side" },
       { name: "authorName", label: "Author", type: "text", group: "side" },
       { name: "published", label: "Published", type: "boolean", group: "side" },
       { name: "publishedAt", label: "Publish date", type: "datetime", group: "side", help: "Set automatically when first published" },
@@ -689,13 +691,13 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "blog-categories",
-    model: "blogCategory",
+    model: "blogCategories",
     label: "Blog Categories",
     singular: "Category",
     icon: "FolderOpen",
     group: "Content",
     viewPath: "/blog/category/{slug}",
-    include: { _count: { select: { posts: true } } },
+    counts: ["posts"],
     columns: [{ field: "name", label: "Name" }, { field: "slug", label: "Slug" }, { field: "_count.posts", label: "Posts", type: "number" }],
     searchFields: ["name"],
     orderBy: [{ name: "asc" }],
@@ -708,13 +710,13 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "blog-tags",
-    model: "blogTag",
+    model: "blogTags",
     label: "Blog Tags",
     singular: "Tag",
     icon: "Tag",
     group: "Content",
     viewPath: "/blog/tag/{slug}",
-    include: { _count: { select: { posts: true } } },
+    counts: ["posts"],
     columns: [{ field: "name", label: "Name" }, { field: "slug", label: "Slug" }, { field: "_count.posts", label: "Posts", type: "number" }],
     searchFields: ["name"],
     orderBy: [{ name: "asc" }],
@@ -725,13 +727,13 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "comments",
-    model: "blogComment",
+    model: "blogComments",
     label: "Blog Comments",
     singular: "Comment",
     icon: "MessageSquare",
     group: "Content",
     canCreate: false,
-    include: { post: { select: { title: true } } },
+    with: { post: { columns: { title: true } } },
     columns: [
       { field: "name", label: "Name" },
       { field: "body", label: "Comment" },
@@ -755,7 +757,7 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "pages",
-    model: "cmsPage",
+    model: "cmsPages",
     label: "Pages",
     singular: "Page",
     icon: "FileText",
@@ -806,20 +808,20 @@ export const RESOURCES: ResourceDef[] = [
   // ============ Site sections ============
   {
     key: "popular-searches",
-    model: "popularSearch",
+    model: "popularSearches",
     label: "Popular Ways to Find Care",
     singular: "Popular search",
     icon: "Search",
     group: "Home page",
-    include: { condition: { select: { name: true } }, specialty: { select: { name: true } } },
+    with: { condition: { columns: { name: true } }, specialty: { columns: { name: true } } },
     columns: [{ field: "label", label: "Label" }, { field: "providerType", label: "Type", type: "badge" }, { field: "condition.name", label: "Condition" }, { field: "specialty.name", label: "Specialty" }, { field: "active", label: "Active", type: "boolean" }, { field: "sortOrder", label: "Order", type: "number" }],
     searchFields: ["label"],
     orderBy: [{ sortOrder: "asc" }],
     fields: [
       { name: "label", label: "Label", type: "text", required: true, wide: true },
       { name: "providerType", label: "Provider type", type: "select", options: PROVIDER_TYPES },
-      { name: "conditionId", label: "Condition", type: "relation", relation: { model: "condition", labelField: "name", orderBy: "sortOrder" } },
-      { name: "specialtyId", label: "Specialty", type: "relation", relation: { model: "specialty", labelField: "name", orderBy: "sortOrder" } },
+      { name: "conditionId", label: "Condition", type: "relation", relation: { model: "conditions", labelField: "name", orderBy: "sortOrder" } },
+      { name: "specialtyId", label: "Specialty", type: "relation", relation: { model: "specialties", labelField: "name", orderBy: "sortOrder" } },
       { name: "query", label: "Free-text query (if no condition/specialty)", type: "text" },
       { name: "active", label: "Active", type: "boolean", group: "side", defaultValue: true },
       { name: "sortOrder", label: "Sort order", type: "number", group: "side" },
@@ -827,7 +829,7 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "blocks",
-    model: "contentBlock",
+    model: "contentBlocks",
     label: "Content Blocks",
     singular: "Content block",
     icon: "LayoutGrid",
@@ -875,7 +877,7 @@ export const RESOURCES: ResourceDef[] = [
   },
   {
     key: "testimonials",
-    model: "testimonial",
+    model: "testimonials",
     label: "Testimonials",
     singular: "Testimonial",
     icon: "UserCheck",
@@ -900,12 +902,12 @@ export const RESOURCES: ResourceDef[] = [
   // ============ System ============
   {
     key: "users",
-    model: "user",
+    model: "users",
     label: "Users",
     singular: "User",
     icon: "Users",
     group: "System",
-    include: { provider: { select: { firstName: true, lastName: true } } },
+    with: { provider: { columns: { firstName: true, lastName: true } } },
     columns: [{ field: "name", label: "Name" }, { field: "email", label: "Email" }, { field: "role", label: "Role", type: "badge" }, { field: "provider.firstName+provider.lastName", label: "Provider" }, { field: "lastLoginAt", label: "Last login", type: "date" }],
     searchFields: ["name", "email"],
     orderBy: [{ id: "desc" }],
@@ -915,7 +917,7 @@ export const RESOURCES: ResourceDef[] = [
       { name: "email", label: "Email", type: "email", required: true },
       { name: "password", label: "Password", type: "password", help: "Leave empty to keep the current password" },
       { name: "role", label: "Role", type: "select", options: opt("ADMIN", "PROVIDER"), required: true, group: "side", defaultValue: "PROVIDER" },
-      { name: "providerId", label: "Linked provider profile", type: "relation", relation: { model: "provider", labelField: "firstName+lastName", orderBy: "lastName" }, group: "side" },
+      { name: "providerId", label: "Linked provider profile", type: "relation", relation: { model: "providers", labelField: "firstName+lastName", orderBy: "lastName" }, group: "side" },
       { name: "googleId", label: "Google account ID", type: "text", group: "side", help: "Filled automatically on first Google sign-in" },
       { name: "facebookId", label: "Facebook account ID", type: "text", group: "side", help: "Filled automatically on first Facebook sign-in" },
     ],

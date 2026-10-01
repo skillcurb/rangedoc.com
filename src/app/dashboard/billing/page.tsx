@@ -1,5 +1,5 @@
 /** DASHBOARD → BILLING & PLAN ( /dashboard/billing ) */
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, asc, desc } from "@/lib/db";
 import { getDashboard } from "@/lib/dashboard";
 import { formatDate, formatMoney, jsonStringArray } from "@/lib/utils";
 import { PageHeader, Panel, StatusBadge } from "@/components/panel/PanelUi";
@@ -10,8 +10,8 @@ export const metadata = { title: "Billing & Plan" };
 export default async function BillingPage() {
   const { provider, features } = await getDashboard();
   const [plans, orders] = await Promise.all([
-    prisma.plan.findMany({ where: { active: true }, orderBy: { sortOrder: "asc" } }),
-    prisma.planOrder.findMany({ where: { providerId: provider.id }, orderBy: { createdAt: "desc" }, include: { plan: true } }),
+    db.query.plans.findMany({ where: eq(t.plans.active, true), orderBy: [asc(t.plans.sortOrder)] }),
+    db.query.planOrders.findMany({ where: eq(t.planOrders.providerId, provider.id), orderBy: [desc(t.planOrders.createdAt)], with: { plan: true } }),
   ]);
   const currentId = features.isPaid ? provider.planId : plans.find((p) => p.isFree)?.id;
   return (

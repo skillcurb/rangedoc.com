@@ -1,5 +1,5 @@
 /**
- * Site settings stored in the `Setting` table (key → JSON).
+ * Site settings stored in the `settings` table (key → JSON).
  * ------------------------------------------------------------------
  * Every group has sensible defaults so the site works on a fresh install.
  * Admin → Settings / Homepage / Claim page edit these values.
@@ -9,7 +9,7 @@
  */
 import "server-only";
 import { cache } from "react";
-import { prisma } from "@/lib/prisma";
+import { db, t } from "@/lib/db";
 
 export const DEFAULT_SETTINGS = {
   general: {
@@ -131,7 +131,7 @@ function merge<T>(base: T, saved: unknown): T {
 
 /** Load all settings once per request */
 export const getSettings = cache(async (): Promise<Settings> => {
-  const rows = await prisma.setting.findMany();
+  const rows = await db.select().from(t.settings);
   const result = { ...DEFAULT_SETTINGS } as Settings;
   for (const row of rows) {
     if (row.key in DEFAULT_SETTINGS) {
@@ -144,11 +144,8 @@ export const getSettings = cache(async (): Promise<Settings> => {
 
 /** Save one settings group */
 export async function saveSettingsGroup(key: SettingsGroup, value: unknown) {
-  await prisma.setting.upsert({
-    where: { key },
-    create: { key, value: value as object },
-    update: { value: value as object },
-  });
+  // Insert, or replace the value when the key already exists (key is the primary key)
+  await db.insert(t.settings).values({ key, value }).onDuplicateKeyUpdate({ set: { value } });
 }
 
 /** Safe subset for the browser (no secrets) */

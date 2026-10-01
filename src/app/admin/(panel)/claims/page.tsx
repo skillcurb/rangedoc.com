@@ -4,7 +4,7 @@
  */
 import Link from "next/link";
 import { CheckCircle2, XCircle } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, isNotNull, asc, desc } from "@/lib/db";
 import { approveClaim, rejectClaim } from "@/lib/admin/actions";
 import { formatDate, providerName } from "@/lib/utils";
 import { PageHeader } from "@/components/panel/PanelUi";
@@ -15,8 +15,13 @@ export const metadata = { title: "Profile Claims" };
 
 export default async function ClaimsPage() {
   const [pending, recent] = await Promise.all([
-    prisma.provider.findMany({ where: { claimStatus: "PENDING" }, include: { user: true, city: true }, orderBy: { updatedAt: "asc" } }),
-    prisma.provider.findMany({ where: { claimStatus: "CLAIMED", claimedAt: { not: null } }, include: { user: true }, orderBy: { claimedAt: "desc" }, take: 10 }),
+    db.query.providers.findMany({ where: eq(t.providers.claimStatus, "PENDING"), with: { user: true, city: true }, orderBy: [asc(t.providers.updatedAt)] }),
+    db.query.providers.findMany({
+      where: and(eq(t.providers.claimStatus, "CLAIMED"), isNotNull(t.providers.claimedAt)),
+      with: { user: true },
+      orderBy: [desc(t.providers.claimedAt)],
+      limit: 10,
+    }),
   ]);
   return (
     <div className="space-y-6">

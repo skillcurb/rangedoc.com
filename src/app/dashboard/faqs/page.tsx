@@ -1,6 +1,6 @@
 /** DASHBOARD → FAQs ( /dashboard/faqs ) */
 import Link from "next/link";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, asc } from "@/lib/db";
 import { getDashboard } from "@/lib/dashboard";
 import { PageHeader } from "@/components/panel/PanelUi";
 import { FaqEditor } from "@/components/dashboard/DashboardEditors";
@@ -9,7 +9,7 @@ export const metadata = { title: "FAQs" };
 
 export default async function FaqsPage() {
   const { provider, features } = await getDashboard();
-  const faqs = await prisma.providerFaq.findMany({ where: { providerId: provider.id }, orderBy: { sortOrder: "asc" } });
+  const faqs = await db.query.providerFaqs.findMany({ where: eq(t.providerFaqs.providerId, provider.id), orderBy: [asc(t.providerFaqs.sortOrder)] });
   return (
     <div className="space-y-6">
       <PageHeader

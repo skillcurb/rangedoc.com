@@ -1,7 +1,7 @@
 /** BROWSE BY LOCATION  ( /locations ) – cities grouped by state */
 import type { Metadata } from "next";
 import Link from "next/link";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, asc, count, isNotNull } from "@/lib/db";
 import { pageMetadata } from "@/lib/seo";
 import { AppImage } from "@/components/ui/AppImage";
 
@@ -10,7 +10,13 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function LocationsPage() {
-  const cities = await prisma.city.findMany({ where: { active: true }, orderBy: [{ state: "asc" }, { name: "asc" }], include: { _count: { select: { providers: true } } } });
+  // Active cities + how many providers point to each (one grouped count on providers.cityId)
+  const [rows, counts] = await Promise.all([
+    db.query.cities.findMany({ where: eq(t.cities.active, true), orderBy: [asc(t.cities.state), asc(t.cities.name)] }),
+    db.select({ cityId: t.providers.cityId, n: count() }).from(t.providers).where(isNotNull(t.providers.cityId)).groupBy(t.providers.cityId),
+  ]);
+  const countBy = new Map(counts.map((r) => [r.cityId, r.n]));
+  const cities = rows.map((c) => ({ ...c, _count: { providers: countBy.get(c.id) ?? 0 } }));
   const byState = cities.reduce<Record<string, typeof cities>>((acc, c) => ((acc[c.state] ??= []).push(c), acc), {});
   const featured = cities.filter((c) => c.featured);
   return (

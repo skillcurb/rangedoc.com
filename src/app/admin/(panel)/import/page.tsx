@@ -4,7 +4,7 @@
  * "CSV UTF-8"). Includes the downloadable template and the column guide.
  */
 import { Download, FileDown } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, asc } from "@/lib/db";
 import { PROVIDER_CSV_COLUMNS } from "@/lib/providers-csv-columns";
 import { PageHeader, Panel } from "@/components/panel/PanelUi";
 import { ProviderImport } from "@/components/admin/ProviderImport";
@@ -13,9 +13,9 @@ export const metadata = { title: "Import Providers" };
 
 export default async function ImportPage() {
   const [providers, cities, plans] = await Promise.all([
-    prisma.provider.count(),
-    prisma.city.findMany({ where: { active: true }, orderBy: { name: "asc" }, select: { name: true, stateCode: true } }),
-    prisma.plan.findMany({ where: { active: true }, orderBy: { sortOrder: "asc" }, select: { slug: true, name: true } }),
+    db.$count(t.providers),
+    db.select({ name: t.cities.name, stateCode: t.cities.stateCode }).from(t.cities).where(eq(t.cities.active, true)).orderBy(asc(t.cities.name)),
+    db.select({ slug: t.plans.slug, name: t.plans.name }).from(t.plans).where(eq(t.plans.active, true)).orderBy(asc(t.plans.sortOrder)),
   ]);
   const groups = [...new Set(PROVIDER_CSV_COLUMNS.map((c) => c.group))];
   return (

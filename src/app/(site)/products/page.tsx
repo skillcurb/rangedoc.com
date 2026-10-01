@@ -6,8 +6,8 @@ import { Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight, Info, MessageCircle } from "lucide-react";
-import type { Prisma } from "@/generated/prisma/client";
-import { prisma } from "@/lib/prisma";
+import type { SQL } from "drizzle-orm";
+import { db, t, eq, and, or, like, inArray, gte, lt, asc, desc } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { pageMetadata, buildMetadata } from "@/lib/seo";
 import { splitList } from "@/lib/utils";
@@ -25,7 +25,7 @@ type Props = { searchParams: Promise<SP> };
 export async function generateMetadata({ searchParams }: Props): Promise<Metadata> {
   const sp = await searchParams;
   const s = await getSettings();
-  const cat = sp.category && !sp.category.includes(",") ? await prisma.productCategory.findUnique({ where: { slug: sp.category } }) : null;
+  const cat = sp.category && !sp.category.includes(",") ? await db.query.productCategories.findFirst({ where: eq(t.productCategories.slug, sp.category) }) : null;
   if (cat) {
     return buildMetadata({ title: cat.metaTitle || `${cat.name} Recovery Products`, description: cat.metaDescription || cat.description, keywords: cat.metaKeywords, image: cat.ogImage, path: `/products?category=${cat.slug}` });
   }
@@ -34,22 +34,26 @@ export async function generateMetadata({ searchParams }: Props): Promise<Metadat
 
 /** Product grid – streams in with a skeleton while filtering */
 async function ProductGrid({ sp }: { sp: SP }) {
-  const where: Prisma.ProductWhereInput = { active: true };
+  // Build the filter as a list of SQL conditions (all must match)
+  const conds: SQL[] = [eq(t.products.active, true)];
   const cats = splitList(sp.category);
-  if (cats.length) where.category = { slug: { in: cats } };
+  // Category by slug → subquery on product_categories
+  if (cats.length) conds.push(inArray(t.products.categoryId, db.select({ id: t.productCategories.id }).from(t.productCategories).where(inArray(t.productCategories.slug, cats))));
   const types = splitList(sp.type);
-  if (types.length) where.productType = { in: types };
-  if (sp.brand) where.brand = sp.brand;
+  if (types.length) conds.push(inArray(t.products.productType, types));
+  if (sp.brand) conds.push(eq(t.products.brand, sp.brand));
   const uses = splitList(sp.use);
-  if (uses.length) where.OR = uses.map((u) => ({ useCases: { contains: u } }));
+  // useCases is a comma separated text column → match any of the chosen use cases
+  if (uses.length) conds.push(or(...uses.map((u) => like(t.products.useCases, `%${u}%`)))!);
   if (sp.price) {
     const [min, max] = sp.price.split("-").map((x) => (x ? Number(x) : undefined));
-    where.priceCents = { ...(min != null ? { gte: min } : {}), ...(max != null ? { lt: max } : {}) };
+    if (min != null) conds.push(gte(t.products.priceCents, min));
+    if (max != null) conds.push(lt(t.products.priceCents, max));
   }
-  const orderBy: Prisma.ProductOrderByWithRelationInput[] =
-    sp.sort === "price-asc" ? [{ priceCents: "asc" }] : sp.sort === "price-desc" ? [{ priceCents: "desc" }] : sp.sort === "newest" ? [{ createdAt: "desc" }] : [{ featured: "desc" }, { sortOrder: "asc" }];
+  const orderBy =
+    sp.sort === "price-asc" ? [asc(t.products.priceCents)] : sp.sort === "price-desc" ? [desc(t.products.priceCents)] : sp.sort === "newest" ? [desc(t.products.createdAt)] : [desc(t.products.featured), asc(t.products.sortOrder)];
 
-  const products = await prisma.product.findMany({ where, orderBy, include: { category: true }, take: 60 });
+  const products = await db.query.products.findMany({ where: and(...conds), orderBy, with: { category: true }, limit: 60 });
   return (
     <>
       <div className="mb-3 flex items-center justify-between">
@@ -89,10 +93,10 @@ export default async function ProductsPage({ searchParams }: Props) {
   const s = await getSettings();
   const pr = s.products;
   const [categories, trust, howto, meta] = await Promise.all([
-    prisma.productCategory.findMany({ orderBy: { sortOrder: "asc" } }),
-    prisma.contentBlock.findMany({ where: { section: "products_trust", active: true }, orderBy: { sortOrder: "asc" } }),
-    prisma.contentBlock.findMany({ where: { section: "products_howto", active: true }, orderBy: { sortOrder: "asc" } }),
-    prisma.product.findMany({ where: { active: true }, select: { productType: true, brand: true, useCases: true } }),
+    db.query.productCategories.findMany({ orderBy: [asc(t.productCategories.sortOrder)] }),
+    db.query.contentBlocks.findMany({ where: and(eq(t.contentBlocks.section, "products_trust"), eq(t.contentBlocks.active, true)), orderBy: [asc(t.contentBlocks.sortOrder)] }),
+    db.query.contentBlocks.findMany({ where: and(eq(t.contentBlocks.section, "products_howto"), eq(t.contentBlocks.active, true)), orderBy: [asc(t.contentBlocks.sortOrder)] }),
+    db.query.products.findMany({ where: eq(t.products.active, true), columns: { productType: true, brand: true, useCases: true } }),
   ]);
   const uniq = (arr: (string | null)[]) => [...new Set(arr.filter(Boolean) as string[])].sort();
   const facets = {
@@ -116,12 +120,12 @@ export default async function ProductsPage({ searchParams }: Props) {
           <p className="mt-2 text-xl font-bold text-navy-900">{pr.subtitle}</p>
           <p className="mt-2 max-w-xl text-navy-700">{pr.description}</p>
           <ul className="mt-6 flex flex-wrap gap-6">
-            {trust.map((t) => (
-              <li key={t.id} className="flex items-center gap-2">
-                <Icon name={t.icon} className="size-7 text-brand-600" />
+            {trust.map((tb) => (
+              <li key={tb.id} className="flex items-center gap-2">
+                <Icon name={tb.icon} className="size-7 text-brand-600" />
                 <span className="text-sm">
-                  <b className="block text-navy-900">{t.title}</b>
-                  <span className="text-xs text-navy-700">{t.text}</span>
+                  <b className="block text-navy-900">{tb.title}</b>
+                  <span className="text-xs text-navy-700">{tb.text}</span>
                 </span>
               </li>
             ))}

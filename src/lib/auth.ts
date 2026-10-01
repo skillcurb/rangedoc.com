@@ -11,7 +11,7 @@ import { cache } from "react";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import bcrypt from "bcryptjs";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq } from "@/lib/db";
 import { SESSION_COOKIE, SESSION_MAX_AGE, signSession, verifySession, type SessionPayload } from "@/lib/session";
 
 export async function hashPassword(password: string) {
@@ -33,7 +33,7 @@ export async function startSession(payload: SessionPayload) {
     path: "/",
     maxAge: SESSION_MAX_AGE,
   });
-  await prisma.user.update({ where: { id: payload.userId }, data: { lastLoginAt: new Date() } });
+  await db.update(t.users).set({ lastLoginAt: new Date() }).where(eq(t.users.id, payload.userId));
 }
 
 export async function endSession() {
@@ -50,10 +50,11 @@ export const getSession = cache(async () => {
 export const getCurrentUser = cache(async () => {
   const session = await getSession();
   if (!session) return null;
-  return prisma.user.findUnique({
-    where: { id: session.userId },
-    select: { id: true, name: true, email: true, role: true, avatar: true, providerId: true },
+  const user = await db.query.users.findFirst({
+    where: eq(t.users.id, session.userId),
+    columns: { id: true, name: true, email: true, role: true, avatar: true, providerId: true },
   });
+  return user ?? null;
 });
 
 /** Use at the top of admin pages / actions */

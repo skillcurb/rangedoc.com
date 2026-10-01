@@ -6,7 +6,7 @@
  */
 import { Suspense } from "react";
 import Link from "next/link";
-import { prisma } from "@/lib/prisma";
+import { db, t, and, gt, gte, inArray, isNotNull, desc, avg, count } from "@/lib/db";
 import { EVENT_LABEL, countByType, dailySeries, rangeStart, topBy } from "@/lib/analytics";
 import { formatDate, formatNumber, providerName } from "@/lib/utils";
 import { PageHeader, Panel, RangeTabs } from "@/components/panel/PanelUi";
@@ -22,9 +22,13 @@ async function Overview({ days }: { days: number }) {
   const [counts, series, newVisitors, returning, avgVisits] = await Promise.all([
     countByType(from, new Date(Date.now() + 1000)),
     dailySeries(["PAGE_VIEW", "SEARCH", "PROFILE_VIEW"], days),
-    prisma.visitor.count({ where: { firstSeenAt: { gte: from } } }),
-    prisma.visitor.count({ where: { lastSeenAt: { gte: from }, visitCount: { gt: 1 } } }),
-    prisma.visitor.aggregate({ where: { lastSeenAt: { gte: from } }, _avg: { visitCount: true, pageViews: true } }),
+    db.$count(t.visitors, gte(t.visitors.firstSeenAt, from)),
+    db.$count(t.visitors, and(gte(t.visitors.lastSeenAt, from), gt(t.visitors.visitCount, 1))),
+    // AVG() comes back as a string (or null when there are no visitors)
+    db
+      .select({ visitCount: avg(t.visitors.visitCount), pageViews: avg(t.visitors.pageViews) })
+      .from(t.visitors)
+      .where(gte(t.visitors.lastSeenAt, from)),
   ]);
   return (
     <>
@@ -32,8 +36,8 @@ async function Overview({ days }: { days: number }) {
         {[
           ["New visitors", newVisitors],
           ["Returning visitors", returning],
-          ["Avg. visits / visitor", (avgVisits._avg.visitCount ?? 0).toFixed(1)],
-          ["Avg. pages / visitor", (avgVisits._avg.pageViews ?? 0).toFixed(1)],
+          ["Avg. visits / visitor", Number(avgVisits[0]?.visitCount ?? 0).toFixed(1)],
+          ["Avg. pages / visitor", Number(avgVisits[0]?.pageViews ?? 0).toFixed(1)],
         ].map(([l, v]) => (
           <div key={l as string} className="card p-4">
             <p className="text-sm text-muted">{l}</p>
@@ -97,19 +101,25 @@ async function Breakdown({ days }: { days: number }) {
 
 async function ProviderTable({ days }: { days: number }) {
   const from = rangeStart(days);
-  const rows = await prisma.analyticsEvent.groupBy({
-    by: ["providerId", "type"],
-    where: { createdAt: { gte: from }, providerId: { not: null }, type: { in: [...INTERACTIONS] } },
-    _count: { _all: true },
-  });
+  // Number of events per (provider, event type) – GROUP BY providerId, type
+  const rows = await db
+    .select({ providerId: t.analyticsEvents.providerId, type: t.analyticsEvents.type, n: count() })
+    .from(t.analyticsEvents)
+    .where(and(gte(t.analyticsEvents.createdAt, from), isNotNull(t.analyticsEvents.providerId), inArray(t.analyticsEvents.type, [...INTERACTIONS])))
+    .groupBy(t.analyticsEvents.providerId, t.analyticsEvents.type);
   const byProvider = new Map<number, Record<string, number>>();
   for (const r of rows) {
     const m = byProvider.get(r.providerId!) ?? {};
-    m[r.type] = r._count._all;
+    m[r.type] = Number(r.n);
     byProvider.set(r.providerId!, m);
   }
   const top = [...byProvider.entries()].sort((a, b) => (b[1].PROFILE_VIEW ?? 0) - (a[1].PROFILE_VIEW ?? 0)).slice(0, 25);
-  const providers = await prisma.provider.findMany({ where: { id: { in: top.map(([id]) => id) } }, select: { id: true, slug: true, prefix: true, firstName: true, lastName: true, credentials: true } });
+  const providers = top.length
+    ? await db
+        .select({ id: t.providers.id, slug: t.providers.slug, prefix: t.providers.prefix, firstName: t.providers.firstName, lastName: t.providers.lastName, credentials: t.providers.credentials })
+        .from(t.providers)
+        .where(inArray(t.providers.id, top.map(([id]) => id)))
+    : [];
   const cols = ["PROFILE_VIEW", "SEARCH_CLICK", "PHOTO_VIEW", "GALLERY_VIEW", "APPOINTMENT_SUBMIT", "CALL_CLICK", "EMAIL_SUBMIT", "WEBSITE_CLICK"];
   return (
     <Panel title="Top provider profiles">
@@ -143,7 +153,7 @@ async function ProviderTable({ days }: { days: number }) {
 }
 
 async function RecentVisitors() {
-  const visitors = await prisma.visitor.findMany({ orderBy: { lastSeenAt: "desc" }, take: 15 });
+  const visitors = await db.query.visitors.findMany({ orderBy: [desc(t.visitors.lastSeenAt)], limit: 15 });
   return (
     <Panel title="Recent visitors">
       <div className="overflow-x-auto">

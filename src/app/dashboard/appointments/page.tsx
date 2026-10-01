@@ -1,6 +1,7 @@
 /** DASHBOARD → APPOINTMENT REQUESTS ( /dashboard/appointments?status= ) */
 import Link from "next/link";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, asc } from "@/lib/db";
+import type { AppointmentStatus as Status } from "@/db/schema";
 import { getDashboard } from "@/lib/dashboard";
 import { formatTime } from "@/lib/hours";
 import { cn, formatDate } from "@/lib/utils";
@@ -14,12 +15,16 @@ export default async function AppointmentsPage({ searchParams }: { searchParams:
   const { status } = await searchParams;
   const { provider } = await getDashboard();
   const valid = ["NEW", "CONFIRMED", "COMPLETED", "CANCELLED"];
-  const list = await prisma.appointmentRequest.findMany({
-    where: { providerId: provider.id, ...(status && valid.includes(status) ? { status: status as "NEW" } : {}) },
-    orderBy: [{ date: "asc" }, { timeSlot: "asc" }],
-    take: 200,
+  const list = await db.query.appointmentRequests.findMany({
+    where: and(
+      eq(t.appointmentRequests.providerId, provider.id),
+      // Optional status filter (and() skips the undefined part)
+      status && valid.includes(status) ? eq(t.appointmentRequests.status, status as Status) : undefined,
+    ),
+    orderBy: [asc(t.appointmentRequests.date), asc(t.appointmentRequests.timeSlot)],
+    limit: 200,
   });
-  const locations = await prisma.providerLocation.findMany({ where: { providerId: provider.id }, select: { id: true, name: true } });
+  const locations = await db.query.providerLocations.findMany({ where: eq(t.providerLocations.providerId, provider.id), columns: { id: true, name: true } });
   return (
     <div className="space-y-6">
       <PageHeader title="Appointment Requests" subtitle="Contact the patient to confirm, then update the status." />

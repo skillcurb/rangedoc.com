@@ -1,5 +1,5 @@
 /** DASHBOARD → MESSAGES ( /dashboard/messages ) – "Email provider" inbox */
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, desc } from "@/lib/db";
 import { getDashboard } from "@/lib/dashboard";
 import { PageHeader } from "@/components/panel/PanelUi";
 import { EmptyState } from "@/components/ui/Misc";
@@ -9,7 +9,7 @@ export const metadata = { title: "Messages" };
 
 export default async function MessagesPage() {
   const { provider } = await getDashboard();
-  const messages = await prisma.providerMessage.findMany({ where: { providerId: provider.id }, orderBy: { createdAt: "desc" }, take: 200 });
+  const messages = await db.query.providerMessages.findMany({ where: eq(t.providerMessages.providerId, provider.id), orderBy: [desc(t.providerMessages.createdAt)], limit: 200 });
   const unread = messages.filter((m) => !m.read).length;
   return (
     <div className="space-y-6">

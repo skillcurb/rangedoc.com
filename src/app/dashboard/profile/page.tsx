@@ -5,7 +5,7 @@
  */
 import Link from "next/link";
 import { Lock } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, asc } from "@/lib/db";
 import { getDashboard } from "@/lib/dashboard";
 import { saveProfile } from "@/lib/actions/provider";
 import { PageHeader, Panel } from "@/components/panel/PanelUi";
@@ -27,10 +27,15 @@ function Field({ label, children, help, className }: { label: string; children: 
 
 export default async function ProfilePage() {
   const { provider: p, features } = await getDashboard();
-  const [conditions, specialties, insurances] = await Promise.all([
-    prisma.condition.findMany({ where: { active: true }, orderBy: { sortOrder: "asc" }, select: { id: true, name: true } }),
-    prisma.specialty.findMany({ orderBy: { sortOrder: "asc" }, select: { id: true, name: true } }),
-    prisma.insurance.findMany({ orderBy: { sortOrder: "asc" }, select: { id: true, name: true } }),
+  const [conditions, specialties, insurances, myConditions, mySpecialties, myInsurances] = await Promise.all([
+    // All options for the checkbox lists
+    db.select({ id: t.conditions.id, name: t.conditions.name }).from(t.conditions).where(eq(t.conditions.active, true)).orderBy(asc(t.conditions.sortOrder)),
+    db.select({ id: t.specialties.id, name: t.specialties.name }).from(t.specialties).orderBy(asc(t.specialties.sortOrder)),
+    db.select({ id: t.insurances.id, name: t.insurances.name }).from(t.insurances).orderBy(asc(t.insurances.sortOrder)),
+    // Ids the provider has selected (rows of the many-to-many join tables)
+    db.select({ id: t.providerConditions.conditionId }).from(t.providerConditions).where(eq(t.providerConditions.providerId, p.id)),
+    db.select({ id: t.providerSpecialties.specialtyId }).from(t.providerSpecialties).where(eq(t.providerSpecialties.providerId, p.id)),
+    db.select({ id: t.providerInsurances.insuranceId }).from(t.providerInsurances).where(eq(t.providerInsurances.providerId, p.id)),
   ]);
 
   return (
@@ -102,15 +107,15 @@ export default async function ProfilePage() {
           <div className="space-y-5">
             <div>
               <p className="label">Conditions treated</p>
-              <CheckboxGroup name="conditionIds" options={conditions} selected={p.conditions.map((c) => c.id)} />
+              <CheckboxGroup name="conditionIds" options={conditions} selected={myConditions.map((c) => c.id)} />
             </div>
             <div>
               <p className="label">Treatment specialties</p>
-              <CheckboxGroup name="specialtyIds" options={specialties} selected={p.specialties.map((c) => c.id)} />
+              <CheckboxGroup name="specialtyIds" options={specialties} selected={mySpecialties.map((c) => c.id)} />
             </div>
             <div>
               <p className="label">Insurance accepted</p>
-              <CheckboxGroup name="insuranceIds" options={insurances} selected={p.insurances.map((c) => c.id)} />
+              <CheckboxGroup name="insuranceIds" options={insurances} selected={myInsurances.map((c) => c.id)} />
             </div>
           </div>
         </Panel>

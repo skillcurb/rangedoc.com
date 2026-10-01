@@ -7,14 +7,14 @@
  *  - updateOrderStatus                    : product orders
  *
  * Form values are converted according to each field's type
- * (money → cents, list → JSON array, relationMany → connect/set …).
+ * (money → cents, list → JSON array, relationMany → join-table links …).
  */
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { prisma } from "@/lib/prisma";
+import { db, eq, and, ne, t, isDuplicateKey } from "@/lib/db";
 import { assertAdmin, hashPassword } from "@/lib/auth";
 import { getResource, type FieldDef, type ResourceDef } from "@/lib/admin/resources";
-import { delegate } from "@/lib/admin/data";
+import { deleteRows, findBy, findRow, findRows, insertRow, LINKS, setLinks, updateRow } from "@/lib/admin/data";
 import { DEFAULT_SETTINGS, getSettings, saveSettingsGroup, type SettingsGroup } from "@/lib/settings";
 import { fulfilPlanOrder, sendOrderEmails } from "@/lib/payments/fulfil";
 import { emailLayout, esc, sendMail } from "@/lib/email";
@@ -34,7 +34,7 @@ async function publicPaths(res: ResourceDef, record: any): Promise<string[]> {
   if (!record) return ["/"];
   if (res.viewPath) return [res.viewPath.replace(/\{(\w+)\}/g, (_: string, k: string) => String(record[k] ?? ""))];
   if (record.providerId) {
-    const p = await prisma.provider.findUnique({ where: { id: record.providerId }, select: { slug: true } });
+    const p = await db.query.providers.findFirst({ where: eq(t.providers.id, record.providerId), columns: { slug: true } });
     if (p) return [`/provider/${p.slug}`];
   }
   if (res.key === "seo") return [SEO_PAGES.find((x) => x.key === record.pageKey)?.path ?? "/"];
@@ -60,15 +60,19 @@ async function uniqueSlug(res: ResourceDef, base: string, id?: number) {
   const root = slugify(base) || "item";
   let s = root;
   for (let i = 2; ; i++) {
-    const hit = await delegate(res.model).findUnique({ where: { slug: s } });
+    const hit = await findBy(res.model, "slug", s);
     if (!hit || hit.id === id) return s;
     s = `${root}-${i}`;
   }
 }
 
-/** Convert submitted form values into Prisma data using the field definitions */
+/**
+ * Convert submitted form values into column values using the field definitions.
+ * Many-to-many fields are returned separately in `links` (saved to join tables).
+ */
 async function buildData(res: ResourceDef, fd: FormData, id?: number) {
   const data: Record<string, any> = {};
+  const links: Record<string, number[]> = {};
   const str = (name: string) => {
     const v = fd.get(name);
     return typeof v === "string" && v.trim() !== "" ? v.trim() : null;
@@ -97,9 +101,8 @@ async function buildData(res: ResourceDef, fd: FormData, id?: number) {
         break;
       }
       case "relationMany": {
-        const ids = fd.getAll(f.name).map(Number).filter((n) => n > 0);
-        data[f.name] = id ? { set: ids.map((x) => ({ id: x })) } : { connect: ids.map((x) => ({ id: x })) };
-        break;
+        links[f.name] = fd.getAll(f.name).map(Number).filter((n) => n > 0);
+        continue; // not a column of this table
       }
       case "list":
         data[f.name] = (str(f.name) ?? "").split("\n").map((s) => s.trim()).filter(Boolean);
@@ -142,7 +145,7 @@ async function buildData(res: ResourceDef, fd: FormData, id?: number) {
     if (data[f.name] === undefined) delete data[f.name];
     if (f.required && (data[f.name] == null || data[f.name] === "") && f.type !== "latlng" && f.type !== "boolean") throw new Error(`${f.label} is required`);
   }
-  return data;
+  return { data, links };
 }
 
 /** Resource-specific rules applied before saving */
@@ -165,12 +168,12 @@ async function beforeSave(res: ResourceDef, data: Record<string, any>, existing:
 async function afterSave(res: ResourceDef, record: any, existing: any) {
   if (res.key === "plan-orders" && record.status === "PAID" && existing?.status !== "PAID") {
     // Temporarily set back so fulfil logic runs (it skips already-paid orders)
-    await prisma.planOrder.update({ where: { id: record.id }, data: { status: "PENDING" } });
+    await db.update(t.planOrders).set({ status: "PENDING" }).where(eq(t.planOrders.id, record.id));
     await fulfilPlanOrder(record.orderNumber, record.paymentRef ?? "manual");
   }
   if (res.key === "plans" && record.isFree) {
     // Only one free plan
-    await prisma.plan.updateMany({ where: { id: { not: record.id }, isFree: true }, data: { isFree: false } });
+    await db.update(t.plans).set({ isFree: false }).where(and(ne(t.plans.id, record.id), eq(t.plans.isFree, true)));
   }
 }
 
@@ -180,17 +183,21 @@ export async function saveRecord(resourceKey: string, id: number | null, _: Admi
   if (!res) return { error: "Unknown resource" };
   let savedId: number;
   try {
-    const existing = id ? await delegate(res.model).findUnique({ where: { id } }) : null;
-    const data = await buildData(res, fd, id ?? undefined);
+    const existing = id ? await findRow(res.model, id) : null;
+    if (id && !existing) return { error: "Record not found" };
+    const { data, links } = await buildData(res, fd, id ?? undefined);
     await beforeSave(res, data, existing);
-    const record = id ? await delegate(res.model).update({ where: { id }, data }) : await delegate(res.model).create({ data });
+    if (id) await updateRow(res.model, id, data);
+    savedId = id ?? (await insertRow(res.model, data));
+    // Many-to-many checkboxes (conditions, specialties, tags…) → join tables
+    for (const [field, ids] of Object.entries(links)) if (LINKS[res.model]?.[field]) await setLinks(res.model, field, savedId, ids);
+    const record = await findRow(res.model, savedId);
     await afterSave(res, record, existing);
     await contentChanged(res, [record]); // sitemap + search engines
-    savedId = record.id;
   } catch (e: any) {
-    // Friendly message for unique constraint errors (duplicate slug/email)
-    if (e?.code === "P2002") return { error: "That value is already used by another record (must be unique)." };
-    return { error: e instanceof Error ? e.message.split("\n").pop() : "Could not save" };
+    // Friendly message for unique index errors (duplicate slug/email)
+    if (isDuplicateKey(e)) return { error: "That value is already used by another record (must be unique)." };
+    return { error: e instanceof Error ? (e.cause instanceof Error ? e.cause.message : e.message).split("\n").pop() : "Could not save" };
   }
   revalidatePath("/", "layout");
   if (!id) redirect(`/admin/r/${res.key}/${savedId}?created=1`);
@@ -202,11 +209,13 @@ export async function deleteRecord(resourceKey: string, id: number): Promise<Adm
   const res = getResource(resourceKey);
   if (!res || res.canDelete === false) return { error: "Not allowed" };
   try {
-    const record = await delegate(res.model).findUnique({ where: { id } });
-    await delegate(res.model).delete({ where: { id } });
+    const record = await findRow(res.model, id);
+    await deleteRows(res.model, [id]);
     await contentChanged(res, [record]);
   } catch (e: any) {
-    return { error: e?.code === "P2003" ? "This record is still used elsewhere and can't be deleted." : "Could not delete" };
+    // 1451 = a foreign key still points at this row
+    const code = e?.errno ?? e?.cause?.errno;
+    return { error: code === 1451 ? "This record is still used elsewhere and can't be deleted." : "Could not delete" };
   }
   revalidatePath("/", "layout");
   return { ok: true, message: `${res.singular} deleted` };
@@ -217,8 +226,8 @@ export async function deleteMany(resourceKey: string, ids: number[]): Promise<Ad
   const res = getResource(resourceKey);
   if (!res || res.canDelete === false) return { error: "Not allowed" };
   try {
-    const records = await delegate(res.model).findMany({ where: { id: { in: ids } } });
-    await delegate(res.model).deleteMany({ where: { id: { in: ids } } });
+    const records = await findRows(res.model, ids);
+    await deleteRows(res.model, ids);
     await contentChanged(res, records);
   } catch {
     return { error: "Some records could not be deleted (still in use)." };
@@ -232,10 +241,12 @@ export async function setField(resourceKey: string, id: number, field: string, v
   await assertAdmin();
   const res = getResource(resourceKey);
   if (!res || !res.quickActions?.some((q) => q.field === field && q.value === value)) return { error: "Not allowed" };
-  const existing = await delegate(res.model).findUnique({ where: { id } });
-  const record = await delegate(res.model).update({ where: { id }, data: { [field]: value } });
+  const existing = await findRow(res.model, id);
+  if (!existing) return { error: "Record not found" };
+  await updateRow(res.model, id, { [field]: value });
+  const record = await findRow(res.model, id);
   const data: Record<string, any> = { ...record };
-  if (res.key === "posts" && field === "published" && value && !existing.publishedAt) await prisma.blogPost.update({ where: { id }, data: { publishedAt: new Date() } });
+  if (res.key === "posts" && field === "published" && value && !existing.publishedAt) await db.update(t.blogPosts).set({ publishedAt: new Date() }).where(eq(t.blogPosts.id, id));
   await afterSave(res, data, existing);
   await contentChanged(res, [record]);
   revalidatePath("/", "layout");
@@ -246,13 +257,13 @@ export async function setField(resourceKey: string, id: number, field: string, v
 
 export async function approveClaim(providerId: number): Promise<AdminState> {
   await assertAdmin();
-  const provider = await prisma.provider.findUnique({ where: { id: providerId }, include: { user: true } });
+  const provider = await db.query.providers.findFirst({ where: eq(t.providers.id, providerId), with: { user: true } });
   if (!provider || !provider.user) return { error: "No pending claim" };
   const free = await getFreePlan();
-  await prisma.provider.update({
-    where: { id: providerId },
-    data: { claimStatus: "CLAIMED", claimedAt: new Date(), planId: provider.planId ?? free?.id ?? null, email: provider.email ?? provider.user.email },
-  });
+  await db
+    .update(t.providers)
+    .set({ claimStatus: "CLAIMED", claimedAt: new Date(), planId: provider.planId ?? free?.id ?? null, email: provider.email ?? provider.user.email })
+    .where(eq(t.providers.id, providerId));
   await sendMail({
     to: provider.user.email,
     subject: "Your profile claim was approved",
@@ -265,17 +276,17 @@ export async function approveClaim(providerId: number): Promise<AdminState> {
 
 export async function rejectClaim(providerId: number): Promise<AdminState> {
   await assertAdmin();
-  const provider = await prisma.provider.findUnique({ where: { id: providerId }, include: { user: true } });
+  const provider = await db.query.providers.findFirst({ where: eq(t.providers.id, providerId), with: { user: true } });
   if (!provider) return { error: "Not found" };
   if (provider.user) {
-    await prisma.user.update({ where: { id: provider.user.id }, data: { providerId: null } });
+    await db.update(t.users).set({ providerId: null }).where(eq(t.users.id, provider.user.id));
     await sendMail({
       to: provider.user.email,
       subject: "About your profile claim",
       html: await emailLayout("We couldn't verify your claim", `<p>Hi ${esc(provider.user.name)}, we were unable to verify ownership of <b>${esc(providerName(provider))}</b>. Please reply to this email with proof (e.g. license) and we'll take another look.</p>`),
     });
   }
-  await prisma.provider.update({ where: { id: providerId }, data: { claimStatus: "UNCLAIMED" } });
+  await db.update(t.providers).set({ claimStatus: "UNCLAIMED" }).where(eq(t.providers.id, providerId));
   revalidatePath("/", "layout");
   return { ok: true, message: "Claim rejected" };
 }
@@ -322,7 +333,12 @@ export async function updateOrderStatus(orderId: number, status: string, notify:
   await assertAdmin();
   const allowed = ["PENDING", "PAID", "PROCESSING", "SHIPPED", "COMPLETED", "CANCELLED", "REFUNDED", "FAILED"];
   if (!allowed.includes(status)) return { error: "Invalid status" };
-  const order = await prisma.order.update({ where: { id: orderId }, data: { status: status as "PAID", ...(status === "PAID" ? { paidAt: new Date() } : {}) } });
+  await db
+    .update(t.orders)
+    .set({ status: status as "PAID", ...(status === "PAID" ? { paidAt: new Date() } : {}) })
+    .where(eq(t.orders.id, orderId));
+  const order = await db.query.orders.findFirst({ where: eq(t.orders.id, orderId) });
+  if (!order) return { error: "Order not found" };
   if (notify) {
     if (status === "PAID") await sendOrderEmails(order.id);
     else await sendMail({ to: order.email, subject: `Order ${order.orderNumber}: ${status.toLowerCase()}`, html: await emailLayout("Order update", `<p>Your order <b>${order.orderNumber}</b> is now <b>${status.toLowerCase()}</b>.</p>`) });

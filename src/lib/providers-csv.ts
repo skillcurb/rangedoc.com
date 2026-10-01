@@ -11,8 +11,8 @@
  */
 import "server-only";
 import Papa from "papaparse";
-import type { Prisma, ProviderType } from "@/generated/prisma/client";
-import { prisma } from "@/lib/prisma";
+import type { ProviderType } from "@/db/schema";
+import { db, t, eq, or, inArray, asc, desc, insertId, pluck } from "@/lib/db";
 import { DAYS, DEFAULT_HOURS, parseHours, type OfficeHours } from "@/lib/hours";
 import { slugify } from "@/lib/utils";
 import { CSV_KEYS, PROVIDER_CSV_COLUMNS } from "@/lib/providers-csv-columns";
@@ -143,11 +143,11 @@ function parse(textIn: string) {
 
 async function loadLookups() {
   const [conditions, specialties, insurances, cities, plans] = await Promise.all([
-    prisma.condition.findMany({ select: { id: true, name: true, slug: true } }),
-    prisma.specialty.findMany({ select: { id: true, name: true, slug: true } }),
-    prisma.insurance.findMany({ select: { id: true, name: true, slug: true } }),
-    prisma.city.findMany({ select: { id: true, name: true, stateCode: true, slug: true, lat: true, lng: true } }),
-    prisma.plan.findMany({ select: { id: true, slug: true, name: true } }),
+    db.select({ id: t.conditions.id, name: t.conditions.name, slug: t.conditions.slug }).from(t.conditions),
+    db.select({ id: t.specialties.id, name: t.specialties.name, slug: t.specialties.slug }).from(t.specialties),
+    db.select({ id: t.insurances.id, name: t.insurances.name, slug: t.insurances.slug }).from(t.insurances),
+    db.select({ id: t.cities.id, name: t.cities.name, stateCode: t.cities.stateCode, slug: t.cities.slug, lat: t.cities.lat, lng: t.cities.lng }).from(t.cities),
+    db.select({ id: t.plans.id, slug: t.plans.slug, name: t.plans.name }).from(t.plans),
   ]);
   // Look-up map that accepts the name, the slug, or the slugified name
   // ("Sports Injury" finds "Sports Injuries" / slug "sports-injury").
@@ -201,10 +201,14 @@ async function analyzeInternal(csvText: string, opts: ImportOptions) {
   // Existing providers by slug and by email (to decide create vs update)
   const slugs = [...new Set(rows.map((r) => r.slug?.toLowerCase()).filter(Boolean))] as string[];
   const emails = [...new Set(rows.map((r) => r.email?.toLowerCase()).filter(Boolean))] as string[];
-  const existing = await prisma.provider.findMany({
-    where: { OR: [{ slug: { in: slugs } }, { email: { in: emails } }] },
-    select: { id: true, slug: true, email: true },
-  });
+  // MySQL's collation is case-insensitive, so IN (...) matches regardless of case
+  const existing =
+    slugs.length || emails.length
+      ? await db
+          .select({ id: t.providers.id, slug: t.providers.slug, email: t.providers.email })
+          .from(t.providers)
+          .where(or(inArray(t.providers.slug, slugs), inArray(t.providers.email, emails)))
+      : [];
   const existingBySlug = new Map(existing.map((e) => [e.slug.toLowerCase(), e]));
   const existingByEmail = new Map(existing.filter((e) => e.email).map((e) => [e.email!.toLowerCase(), e]));
 
@@ -335,10 +339,13 @@ export async function analyzeCsv(csvText: string, opts: ImportOptions) {
 async function uniqueSlug(base: string, taken: Set<string>) {
   const root = slugify(base) || "provider";
   let s = root;
-  for (let i = 2; taken.has(s) || (await prisma.provider.findUnique({ where: { slug: s }, select: { id: true } })); i++) s = `${root}-${i}`;
+  for (let i = 2; taken.has(s) || (await db.query.providers.findFirst({ where: eq(t.providers.slug, s), columns: { id: true } })); i++) s = `${root}-${i}`;
   taken.add(s);
   return s;
 }
+
+/** Taxonomy table for each kind (all three have id / name / slug) */
+const TAXONOMY_TABLES = { condition: t.conditions, specialty: t.specialties, insurance: t.insurances } as const;
 
 /** Find taxonomy ids by name/slug, creating missing ones when allowed */
 async function taxonomyIds(kind: "condition" | "specialty" | "insurance", names: string[], lookups: Lookups, create: boolean) {
@@ -348,12 +355,16 @@ async function taxonomyIds(kind: "condition" | "specialty" | "insurance", names:
     let item = findTaxonomy(map, n);
     if (!item && create) {
       const data = { name: n, slug: slugify(n) };
-      item =
-        kind === "condition"
-          ? await prisma.condition.upsert({ where: { slug: data.slug }, create: { ...data, showOnHome: false }, update: {}, select: { id: true, name: true, slug: true } })
-          : kind === "specialty"
-            ? await prisma.specialty.upsert({ where: { slug: data.slug }, create: data, update: {}, select: { id: true, name: true, slug: true } })
-            : await prisma.insurance.upsert({ where: { slug: data.slug }, create: data, update: {}, select: { id: true, name: true, slug: true } });
+      const table = TAXONOMY_TABLES[kind];
+      // "Upsert" by slug: insert, or leave the existing row untouched (no-op update), then read it back
+      if (kind === "condition") {
+        await db.insert(t.conditions).values({ ...data, showOnHome: false }).onDuplicateKeyUpdate({ set: { slug: data.slug } });
+      } else {
+        await db.insert(table).values(data).onDuplicateKeyUpdate({ set: { slug: data.slug } });
+      }
+      const [row] = await db.select({ id: table.id, name: table.name, slug: table.slug }).from(table).where(eq(table.slug, data.slug)).limit(1);
+      if (!row) throw new Error(`could not create ${kind} “${n}”`);
+      item = row;
       map.set(n.toLowerCase(), item);
       map.set(item.slug, item);
     }
@@ -367,13 +378,17 @@ async function cityFor(loc: LocationInput, lookups: Lookups, create: boolean) {
   let city = lookups.cities.get(key);
   if (!city && create && loc.lat != null && loc.lng != null) {
     const slug = slugify(`${loc.city}-${loc.stateCode}`);
-    city = await prisma.city.upsert({
-      where: { slug },
-      create: { name: loc.city, state: loc.stateCode, stateCode: loc.stateCode, slug, lat: loc.lat, lng: loc.lng, zipCodes: loc.zip },
-      update: {},
-      select: { id: true, name: true, stateCode: true, slug: true, lat: true, lng: true },
-    });
-    lookups.cities.set(key, city);
+    // "Upsert" by slug: insert, or keep the existing city (no-op update), then read it back
+    await db
+      .insert(t.cities)
+      .values({ name: loc.city, state: loc.stateCode, stateCode: loc.stateCode, slug, lat: loc.lat, lng: loc.lng, zipCodes: loc.zip })
+      .onDuplicateKeyUpdate({ set: { slug } });
+    [city] = await db
+      .select({ id: t.cities.id, name: t.cities.name, stateCode: t.cities.stateCode, slug: t.cities.slug, lat: t.cities.lat, lng: t.cities.lng })
+      .from(t.cities)
+      .where(eq(t.cities.slug, slug))
+      .limit(1);
+    if (city) lookups.cities.set(key, city);
   }
   if (!city) throw new Error(`city “${loc.city}, ${loc.stateCode}” not found`);
   return city;
@@ -463,47 +478,62 @@ export async function importCsv(csvText: string, opts: ImportOptions): Promise<I
       }));
 
       let slug: string;
-      await prisma.$transaction(async (tx) => {
+      // One transaction per provider: profile, links, locations and gallery succeed or fail together
+      await db.transaction(async (tx) => {
+        let providerId: number;
+        let galleryAltName: string;
         if (g.existingId) {
           // ---- Update ----
-          const p = await tx.provider.update({
-            where: { id: g.existingId },
-            data: {
-              ...(data as Prisma.ProviderUncheckedUpdateInput),
-              ...(conditionIds.length ? { conditions: { set: conditionIds.map((id) => ({ id })) } } : {}),
-              ...(specialtyIds.length ? { specialties: { set: specialtyIds.map((id) => ({ id })) } } : {}),
-              ...(insuranceIds.length ? { insurances: { set: insuranceIds.map((id) => ({ id })) } } : {}),
-            },
+          providerId = g.existingId;
+          if (Object.keys(data).length) {
+            await tx.update(t.providers).set(data as Partial<typeof t.providers.$inferInsert>).where(eq(t.providers.id, providerId));
+          }
+          const p = await tx.query.providers.findFirst({
+            where: eq(t.providers.id, providerId),
+            columns: { slug: true, practiceName: true, lastName: true },
           });
+          if (!p) throw new Error("provider not found");
           slug = p.slug;
-          if (locationRows.length) {
-            await tx.providerLocation.deleteMany({ where: { providerId: p.id } });
-            await tx.providerLocation.createMany({ data: locationRows.map((l) => ({ ...l, providerId: p.id })) });
+          galleryAltName = p.practiceName ?? p.lastName;
+          // Filled taxonomy columns replace the provider's links (empty = keep)
+          if (conditionIds.length) {
+            await tx.delete(t.providerConditions).where(eq(t.providerConditions.providerId, providerId));
+            await tx.insert(t.providerConditions).values(conditionIds.map((conditionId) => ({ providerId, conditionId })));
           }
-          if (gallery.length) {
-            await tx.galleryImage.deleteMany({ where: { providerId: p.id } });
-            await tx.galleryImage.createMany({ data: gallery.map((u, i) => ({ providerId: p.id, url: u, alt: `${p.practiceName ?? p.lastName} clinic photo ${i + 1}`, sortOrder: i })) });
+          if (specialtyIds.length) {
+            await tx.delete(t.providerSpecialties).where(eq(t.providerSpecialties.providerId, providerId));
+            await tx.insert(t.providerSpecialties).values(specialtyIds.map((specialtyId) => ({ providerId, specialtyId })));
           }
+          if (insuranceIds.length) {
+            await tx.delete(t.providerInsurances).where(eq(t.providerInsurances.providerId, providerId));
+            await tx.insert(t.providerInsurances).values(insuranceIds.map((insuranceId) => ({ providerId, insuranceId })));
+          }
+          // Locations / gallery in the CSV replace the existing ones
+          if (locationRows.length) await tx.delete(t.providerLocations).where(eq(t.providerLocations.providerId, providerId));
+          if (gallery.length) await tx.delete(t.galleryImages).where(eq(t.galleryImages.providerId, providerId));
         } else {
           // ---- Create ----
           slug = r.slug ? await uniqueSlug(r.slug, takenSlugs) : await uniqueSlug(`dr ${r.first_name} ${r.last_name} ${cities[0]?.name ?? ""}`, takenSlugs);
-          const p = await tx.provider.create({
-            data: {
-              ...(data as Prisma.ProviderUncheckedCreateInput),
+          providerId = await insertId(
+            tx.insert(t.providers).values({
+              ...(data as Partial<typeof t.providers.$inferInsert>),
               slug,
               firstName: r.first_name,
               lastName: r.last_name,
               providerType: type!,
               headline: text(r.headline) ?? (type === "CHIROPRACTOR" ? "Chiropractor" : "Physical Therapist"),
               officeHours: hours ?? DEFAULT_HOURS,
-              conditions: { connect: conditionIds.map((id) => ({ id })) },
-              specialties: { connect: specialtyIds.map((id) => ({ id })) },
-              insurances: { connect: insuranceIds.map((id) => ({ id })) },
-              locations: { create: locationRows },
-              gallery: { create: gallery.map((u, i) => ({ url: u, alt: `${text(r.practice_name) ?? r.last_name} clinic photo ${i + 1}`, sortOrder: i })) },
-            },
-          });
-          slug = p.slug;
+            }),
+          );
+          galleryAltName = text(r.practice_name) ?? r.last_name;
+          // Many-to-many links (never insert an empty list)
+          if (conditionIds.length) await tx.insert(t.providerConditions).values(conditionIds.map((conditionId) => ({ providerId, conditionId })));
+          if (specialtyIds.length) await tx.insert(t.providerSpecialties).values(specialtyIds.map((specialtyId) => ({ providerId, specialtyId })));
+          if (insuranceIds.length) await tx.insert(t.providerInsurances).values(insuranceIds.map((insuranceId) => ({ providerId, insuranceId })));
+        }
+        if (locationRows.length) await tx.insert(t.providerLocations).values(locationRows.map((l) => ({ ...l, providerId })));
+        if (gallery.length) {
+          await tx.insert(t.galleryImages).values(gallery.map((u, i) => ({ providerId, url: u, alt: `${galleryAltName} clinic photo ${i + 1}`, sortOrder: i })));
         }
       });
       paths.push(`/provider/${slug!}`);
@@ -526,15 +556,16 @@ function hoursToText(value: unknown) {
 
 /** Every provider in import format – one row per location */
 export async function exportCsv() {
-  const providers = await prisma.provider.findMany({
-    orderBy: { id: "asc" },
-    include: {
-      plan: { select: { slug: true } },
-      conditions: { select: { name: true } },
-      specialties: { select: { name: true } },
-      insurances: { select: { name: true } },
-      locations: { orderBy: [{ isPrimary: "desc" }, { sortOrder: "asc" }] },
-      gallery: { orderBy: { sortOrder: "asc" }, select: { url: true } },
+  const providers = await db.query.providers.findMany({
+    orderBy: [asc(t.providers.id)],
+    with: {
+      plan: { columns: { slug: true } },
+      // many-to-many → join rows, flattened with pluck() below
+      conditions: { with: { condition: { columns: { name: true } } } },
+      specialties: { with: { specialty: { columns: { name: true } } } },
+      insurances: { with: { insurance: { columns: { name: true } } } },
+      locations: { orderBy: [desc(t.providerLocations.isPrimary), asc(t.providerLocations.sortOrder)] },
+      gallery: { orderBy: [asc(t.galleryImages.sortOrder)], columns: { url: true } },
     },
   });
   const rows: Record<string, string>[] = [];
@@ -562,9 +593,9 @@ export async function exportCsv() {
       license_number: p.licenseNumber ?? "",
       license_state: p.licenseState ?? "",
       license_verified: yes(p.licenseVerified),
-      conditions: p.conditions.map((c) => c.name).join("|"),
-      specialties: p.specialties.map((c) => c.name).join("|"),
-      insurances: p.insurances.map((c) => c.name).join("|"),
+      conditions: pluck(p.conditions, "condition").map((c) => c.name).join("|"),
+      specialties: pluck(p.specialties, "specialty").map((c) => c.name).join("|"),
+      insurances: pluck(p.insurances, "insurance").map((c) => c.name).join("|"),
       accepting_new_patients: yes(p.acceptingNewPatients),
       in_person: yes(p.inPerson),
       telehealth: yes(p.telehealth),

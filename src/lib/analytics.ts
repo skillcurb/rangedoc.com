@@ -1,8 +1,8 @@
 /**
  * Analytics – recording and reporting.
  * ------------------------------------------------------------------
- * Every tracked interaction becomes a row in AnalyticsEvent and updates
- * the anonymous Visitor row (device, browser, location, visit count).
+ * Every tracked interaction becomes a row in `analytics_events` and updates
+ * the anonymous `visitors` row (device, browser, location, visit count).
  *
  * Visitor location comes from (first available):
  *   1. CDN geo headers (Vercel `x-vercel-ip-*`, Cloudflare `cf-ip*`)
@@ -10,8 +10,8 @@
  */
 import "server-only";
 import { UAParser } from "ua-parser-js";
-import { Prisma, type EventType } from "@/generated/prisma/client";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, gte, lt, isNotNull, desc, sql, count, isDuplicateKey } from "@/lib/db";
+import type { EventType } from "@/db/schema";
 
 export const EVENT_TYPES = [
   "PAGE_VIEW", "SEARCH", "SEARCH_IMPRESSION", "SEARCH_CLICK", "PROFILE_VIEW", "APPOINTMENT_CLICK",
@@ -94,46 +94,48 @@ export async function recordEvents(events: TrackEvent[], ctx: TrackContext) {
 
   // Upsert the visitor (counts repeat visits by session id)
   if (visitorId) {
-    const existing = await prisma.visitor.findUnique({ where: { id: visitorId } });
+    const existing = await db.query.visitors.findFirst({ where: eq(t.visitors.id, visitorId) });
     if (existing) {
       const newSession = !!ctx.sessionId && ctx.sessionId !== existing.lastSessionId;
-      await prisma.visitor.update({
-        where: { id: visitorId },
-        data: {
+      await db
+        .update(t.visitors)
+        .set({
           lastSeenAt: new Date(),
-          pageViews: { increment: pageViews },
-          ...(newSession ? { visitCount: { increment: 1 }, lastSessionId: ctx.sessionId } : {}),
+          // Increment in SQL so parallel requests don't overwrite each other
+          pageViews: sql`${t.visitors.pageViews} + ${pageViews}`,
+          ...(newSession ? { visitCount: sql`${t.visitors.visitCount} + 1`, lastSessionId: ctx.sessionId } : {}),
           device,
           browser,
           os,
           ...(geo.city ? { city: geo.city, region: geo.region, country: geo.country, lat: geo.lat, lng: geo.lng } : {}),
-        },
-      });
+        })
+        .where(eq(t.visitors.id, visitorId));
     } else {
       // Two requests from a brand-new visitor can arrive at the same time,
-      // so ignore "already exists" and just bump the counters instead.
-      await prisma.visitor
-        .create({
-          data: {
-            id: visitorId,
-            pageViews,
-            lastSessionId: ctx.sessionId ?? null,
-            device,
-            browser,
-            os,
-            ...geo,
-            referrer: ctx.referrer?.slice(0, 500) || null,
-          },
-        })
-        .catch(async (e: { code?: string }) => {
-          if (e?.code !== "P2002") throw e;
-          await prisma.visitor.update({ where: { id: visitorId }, data: { lastSeenAt: new Date(), pageViews: { increment: pageViews } } });
+      // so ignore "already exists" (duplicate key) and just bump the counters instead.
+      try {
+        await db.insert(t.visitors).values({
+          id: visitorId,
+          pageViews,
+          lastSessionId: ctx.sessionId ?? null,
+          device,
+          browser,
+          os,
+          ...geo,
+          referrer: ctx.referrer?.slice(0, 500) || null,
         });
+      } catch (e) {
+        if (!isDuplicateKey(e)) throw e;
+        await db
+          .update(t.visitors)
+          .set({ lastSeenAt: new Date(), pageViews: sql`${t.visitors.pageViews} + ${pageViews}` })
+          .where(eq(t.visitors.id, visitorId));
+      }
     }
   }
 
-  await prisma.analyticsEvent.createMany({
-    data: events.map((e) => ({
+  await db.insert(t.analyticsEvents).values(
+    events.map((e) => ({
       type: e.type,
       visitorId,
       sessionId: ctx.sessionId?.slice(0, 64) || null,
@@ -145,9 +147,9 @@ export async function recordEvents(events: TrackEvent[], ctx: TrackContext) {
       os,
       country: geo.country,
       city: geo.city,
-      meta: (e.meta ?? undefined) as Prisma.InputJsonValue | undefined,
+      meta: e.meta ?? null,
     })),
-  });
+  );
 }
 
 // ───────────────────────────── Reporting ─────────────────────────────
@@ -161,28 +163,41 @@ export function rangeStart(days: number) {
 
 /** Count events by type in a period, optionally for one provider */
 export async function countByType(from: Date, to: Date, providerId?: number) {
-  const rows = await prisma.analyticsEvent.groupBy({
-    by: ["type"],
-    where: { createdAt: { gte: from, lt: to }, ...(providerId ? { providerId } : {}) },
-    _count: { _all: true },
-  });
+  const e = t.analyticsEvents;
+  const rows = await db
+    .select({ type: e.type, n: count() })
+    .from(e)
+    .where(and(gte(e.createdAt, from), lt(e.createdAt, to), providerId ? eq(e.providerId, providerId) : undefined))
+    .groupBy(e.type);
   const out: Record<string, number> = {};
-  for (const r of rows) out[r.type] = r._count._all;
+  for (const r of rows) out[r.type] = Number(r.n);
   return out;
 }
 
 /** Daily counts for a chart: [{ date: "2026-09-01", EVENT: n, … }] */
 export async function dailySeries(types: EventType[], days: number, providerId?: number) {
   const from = rangeStart(days);
-  // MySQL: group events per calendar day and type (enum columns compare as text).
-  const rows = await prisma.$queryRaw<{ d: Date | string; t: string; c: bigint | number }[]>(Prisma.sql`
-    SELECT DATE(createdAt) AS d, type AS t, COUNT(*) AS c
-    FROM AnalyticsEvent
-    WHERE createdAt >= ${from}
-      AND type IN (${Prisma.join(types)})
-      ${providerId ? Prisma.sql`AND providerId = ${providerId}` : Prisma.empty}
-    GROUP BY DATE(createdAt), type
-  `);
+  type DayRow = { d: Date | string; t: string; c: bigint | number | string };
+  let rows: DayRow[] = [];
+  // "IN ()" would be invalid SQL, so only query when there are types to count
+  if (types.length) {
+    const e = t.analyticsEvents;
+    // MySQL: group events per calendar day and type (enum columns compare as text).
+    // Table/column references render as `analytics_events`.`created_at` etc.
+    const result = await db.execute(sql`
+      SELECT DATE(${e.createdAt}) AS d, ${e.type} AS t, COUNT(*) AS c
+      FROM ${e}
+      WHERE ${e.createdAt} >= ${from}
+        AND ${e.type} IN (${sql.join(
+          types.map((v) => sql`${v}`),
+          sql`, `,
+        )})
+        ${providerId ? sql`AND ${e.providerId} = ${providerId}` : sql``}
+      GROUP BY DATE(${e.createdAt}), ${e.type}
+    `);
+    // mysql2 returns [rows, fields]
+    rows = (result as unknown as [DayRow[], unknown])[0];
+  }
   const map = new Map<string, Record<string, number | string>>();
   for (let i = 0; i < days; i++) {
     const d = new Date(from);
@@ -200,19 +215,24 @@ export async function dailySeries(types: EventType[], days: number, providerId?:
 
 /** Top values of a column (device, browser, city, path…) */
 export async function topBy(column: "device" | "browser" | "os" | "country" | "city" | "path", from: Date, opts: { type?: EventType; providerId?: number; limit?: number } = {}) {
-  const rows = await prisma.analyticsEvent.groupBy({
-    by: [column],
-    where: {
-      createdAt: { gte: from },
-      [column]: { not: null },
-      ...(opts.type ? { type: opts.type } : {}),
-      ...(opts.providerId ? { providerId: opts.providerId } : {}),
-    },
-    _count: { _all: true },
-    orderBy: { _count: { [column]: "desc" } },
-    take: opts.limit ?? 10,
-  });
-  return rows.map((r) => ({ label: String((r as Record<string, unknown>)[column] ?? "Unknown"), count: r._count._all }));
+  const e = t.analyticsEvents;
+  const col = e[column];
+  const n = count();
+  const rows = await db
+    .select({ value: col, n })
+    .from(e)
+    .where(
+      and(
+        gte(e.createdAt, from),
+        isNotNull(col),
+        opts.type ? eq(e.type, opts.type) : undefined,
+        opts.providerId ? eq(e.providerId, opts.providerId) : undefined,
+      ),
+    )
+    .groupBy(col)
+    .orderBy(desc(n))
+    .limit(opts.limit ?? 10);
+  return rows.map((r) => ({ label: String(r.value ?? "Unknown"), count: Number(r.n) }));
 }
 
 /** Percentage change helper for KPI cards */

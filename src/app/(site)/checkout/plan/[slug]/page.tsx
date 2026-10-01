@@ -7,7 +7,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Check, ShieldCheck } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, asc } from "@/lib/db";
 import { getCurrentUser } from "@/lib/auth";
 import { getSettings, paymentMethodList } from "@/lib/settings";
 import { INTERVAL_LABEL } from "@/lib/plans";
@@ -20,15 +20,15 @@ export const metadata: Metadata = { title: "Checkout", robots: { index: false } 
 export default async function PlanCheckoutPage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams: Promise<{ provider?: string }> }) {
   const { slug } = await params;
   const { provider: claimId } = await searchParams;
-  const plan = await prisma.plan.findUnique({ where: { slug } });
+  const plan = await db.query.plans.findFirst({ where: eq(t.plans.slug, slug) });
   if (!plan || !plan.active) notFound();
   if (plan.isFree) redirect("/register");
 
   const [user, settings] = await Promise.all([getCurrentUser(), getSettings()]);
   const methods = paymentMethodList(settings).map(({ id, label }) => ({ id, label }));
-  const provider = user?.providerId ? await prisma.provider.findUnique({ where: { id: user.providerId } }) : null;
-  const claimProvider = !user && claimId ? await prisma.provider.findUnique({ where: { id: Number(claimId) }, include: { city: true } }) : null;
-  const cities = user ? [] : await prisma.city.findMany({ where: { active: true }, orderBy: { name: "asc" }, select: { id: true, name: true, stateCode: true } });
+  const provider = user?.providerId ? await db.query.providers.findFirst({ where: eq(t.providers.id, user.providerId) }) : null;
+  const claimProvider = !user && claimId ? await db.query.providers.findFirst({ where: eq(t.providers.id, Number(claimId)), with: { city: true } }) : null;
+  const cities = user ? [] : await db.query.cities.findMany({ where: eq(t.cities.active, true), orderBy: [asc(t.cities.name)], columns: { id: true, name: true, stateCode: true } });
 
   return (
     <div className="bg-surface py-10">

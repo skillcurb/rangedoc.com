@@ -4,7 +4,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, asc } from "@/lib/db";
 import { pageMetadata } from "@/lib/seo";
 import { getCurrentUser } from "@/lib/auth";
 import { providerName } from "@/lib/utils";
@@ -22,8 +22,8 @@ export default async function RegisterPage({ searchParams }: Props) {
   const user = await getCurrentUser();
   if (user?.role === "PROVIDER" && user.providerId) redirect(next || "/dashboard");
 
-  const provider = providerParam ? await prisma.provider.findUnique({ where: { id: Number(providerParam) }, include: { city: true } }) : null;
-  const cities = await prisma.city.findMany({ where: { active: true }, orderBy: { name: "asc" }, select: { id: true, name: true, stateCode: true } });
+  const provider = providerParam ? await db.query.providers.findFirst({ where: eq(t.providers.id, Number(providerParam)), with: { city: true } }) : null;
+  const cities = await db.query.cities.findMany({ where: eq(t.cities.active, true), orderBy: [asc(t.cities.name)], columns: { id: true, name: true, stateCode: true } });
   const alreadyClaimed = provider && provider.claimStatus !== "UNCLAIMED";
 
   return (

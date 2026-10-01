@@ -17,7 +17,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import sharp from "sharp";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, insertId } from "@/lib/db";
 import { slugify } from "@/lib/utils";
 
 // turbopackIgnore: the folder is chosen at runtime, so don't bundle/trace it
@@ -57,7 +57,7 @@ function safeJoin(...parts: string[]) {
 export type SavedFile = Awaited<ReturnType<typeof saveUpload>>;
 
 /**
- * Validate + store an uploaded File and create its Media row.
+ * Validate + store an uploaded File and create its `media` row (returns the row).
  */
 export async function saveUpload(file: File, opts: { folder: string; uploadedById?: number; providerId?: number; alt?: string }) {
   const maxMb = ALLOWED_TYPES[file.type];
@@ -90,8 +90,8 @@ export async function saveUpload(file: File, opts: { folder: string; uploadedByI
   await fs.writeFile(path.join(dir, filename), buffer);
 
   const relPath = `${opts.folder}/${filename}`;
-  return prisma.media.create({
-    data: {
+  const id = await insertId(
+    db.insert(t.media).values({
       filename,
       originalName: original.slice(0, 190),
       url: `/uploads/${relPath}`,
@@ -105,16 +105,20 @@ export async function saveUpload(file: File, opts: { folder: string; uploadedByI
       folder: opts.folder,
       uploadedById: opts.uploadedById,
       providerId: opts.providerId,
-    },
-  });
+    }),
+  );
+  // MySQL can't return the inserted row, so read it back
+  const row = await db.query.media.findFirst({ where: eq(t.media.id, id) });
+  if (!row) throw new Error("Saved media row not found");
+  return row;
 }
 
 /** Delete a media row and its file */
 export async function deleteMedia(id: number) {
-  const media = await prisma.media.findUnique({ where: { id } });
+  const media = await db.query.media.findFirst({ where: eq(t.media.id, id) });
   if (!media) return;
   await fs.rm(safeJoin(media.path), { force: true }).catch(() => undefined);
-  await prisma.media.delete({ where: { id } });
+  await db.delete(t.media).where(eq(t.media.id, id));
 }
 
 /** Resolve an /uploads URL path to a file on disk (used by the serving route) */

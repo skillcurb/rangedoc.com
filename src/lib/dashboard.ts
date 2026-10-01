@@ -4,18 +4,40 @@
 import "server-only";
 import { cache } from "react";
 import { redirect } from "next/navigation";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq } from "@/lib/db";
 import { requireProvider } from "@/lib/auth";
 import { providerFeatures } from "@/lib/plans";
 import { getFreePlan } from "@/lib/queries";
 
 export const getDashboard = cache(async () => {
   const user = await requireProvider();
-  const provider = await prisma.provider.findUnique({
-    where: { id: user.providerId },
-    include: { plan: true, city: true, conditions: { select: { id: true } }, specialties: { select: { id: true } }, insurances: { select: { id: true } }, _count: { select: { locations: true, gallery: true, faqs: true } } },
-  });
-  if (!provider) redirect("/register");
+  const id = user.providerId;
+  const [row, locations, gallery, faqs] = await Promise.all([
+    db.query.providers.findFirst({
+      where: eq(t.providers.id, id),
+      with: {
+        plan: true,
+        city: true,
+        // Many-to-many join rows – only the linked ids are needed
+        conditions: { columns: { conditionId: true } },
+        specialties: { columns: { specialtyId: true } },
+        insurances: { columns: { insuranceId: true } },
+      },
+    }),
+    // Counts for the profile checklist
+    db.$count(t.providerLocations, eq(t.providerLocations.providerId, id)),
+    db.$count(t.galleryImages, eq(t.galleryImages.providerId, id)),
+    db.$count(t.providerFaqs, eq(t.providerFaqs.providerId, id)),
+  ]);
+  if (!row) redirect("/register");
+  // Same shape the dashboard pages use: conditions/specialties/insurances as [{ id }] + _count
+  const provider = {
+    ...row,
+    conditions: row.conditions.map((x) => ({ id: x.conditionId })),
+    specialties: row.specialties.map((x) => ({ id: x.specialtyId })),
+    insurances: row.insurances.map((x) => ({ id: x.insuranceId })),
+    _count: { locations, gallery, faqs },
+  };
   const features = providerFeatures(provider, await getFreePlan());
   return { user, provider, features };
 });

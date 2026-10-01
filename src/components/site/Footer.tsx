@@ -3,7 +3,7 @@
  * Links are built from the database (conditions, specialties, CMS pages).
  */
 import Link from "next/link";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq, and, asc, isNotNull } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { Logo } from "@/components/site/Logo";
 import { FacebookIcon, InstagramIcon, LinkedinIcon, TiktokIcon, XIcon, YoutubeIcon } from "@/components/ui/SocialIcons";
@@ -11,9 +11,9 @@ import { FacebookIcon, InstagramIcon, LinkedinIcon, TiktokIcon, XIcon, YoutubeIc
 export async function Footer() {
   const [s, conditions, specialties, pages] = await Promise.all([
     getSettings(),
-    prisma.condition.findMany({ where: { active: true }, orderBy: { sortOrder: "asc" }, take: 8, select: { name: true, slug: true } }),
-    prisma.specialty.findMany({ orderBy: { sortOrder: "asc" }, take: 7, select: { name: true, slug: true } }),
-    prisma.cmsPage.findMany({ where: { published: true, footerGroup: { not: null } }, orderBy: { sortOrder: "asc" }, select: { title: true, slug: true, footerGroup: true } }),
+    db.query.conditions.findMany({ where: eq(t.conditions.active, true), orderBy: [asc(t.conditions.sortOrder)], limit: 8, columns: { name: true, slug: true } }),
+    db.query.specialties.findMany({ orderBy: [asc(t.specialties.sortOrder)], limit: 7, columns: { name: true, slug: true } }),
+    db.query.cmsPages.findMany({ where: and(eq(t.cmsPages.published, true), isNotNull(t.cmsPages.footerGroup)), orderBy: [asc(t.cmsPages.sortOrder)], columns: { title: true, slug: true, footerGroup: true } }),
   ]);
 
   const socials = [

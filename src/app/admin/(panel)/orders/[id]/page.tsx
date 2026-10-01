@@ -4,7 +4,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { db, t, eq } from "@/lib/db";
 import { formatDate, formatMoney } from "@/lib/utils";
 import { PageHeader, Panel, StatusBadge } from "@/components/panel/PanelUi";
 import { AppImage } from "@/components/ui/AppImage";
@@ -13,7 +13,7 @@ import { OrderStatusForm } from "@/components/admin/OrderStatusForm";
 export const metadata = { title: "Order" };
 
 export default async function OrderPage({ params }: { params: Promise<{ id: string }> }) {
-  const order = await prisma.order.findUnique({ where: { id: Number((await params).id) }, include: { items: true } });
+  const order = await db.query.orders.findFirst({ where: eq(t.orders.id, Number((await params).id)), with: { items: true } });
   if (!order) notFound();
   return (
     <div className="space-y-6">

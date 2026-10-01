@@ -1,6 +1,6 @@
 /**
  * Database seed – fills a fresh database with demo content so every page
- * works right away. Run with:  npm run db:seed
+ * works right away. Run with:  npx tsx src/db/seed.ts
  *
  * Creates: admin + demo provider login, plans, conditions, specialties,
  * insurances, cities, ~40 providers (paid / free / unclaimed), reviews,
@@ -8,13 +8,33 @@
  *
  * Safe to re-run: it clears the demo tables first (NOT users you created,
  * except the demo provider account).
+ *
+ * This script runs outside Next.js, so it creates its own Drizzle client
+ * instead of importing "@/lib/db" (that file imports "server-only").
  */
 import "dotenv/config";
 import bcrypt from "bcryptjs";
-import { PrismaMariaDb } from "@prisma/adapter-mariadb";
-import { PrismaClient, type ProviderType, type Condition, type Specialty, type City, type Insurance } from "../src/generated/prisma/client";
+import { drizzle } from "drizzle-orm/mysql2";
+import mysql from "mysql2/promise";
+import { and, asc, eq, getTableName, sql, type Table } from "drizzle-orm";
+import * as schema from "./schema";
+import * as relations from "./relations";
+import type { ProviderType, EventType, Condition, Specialty, City, Insurance } from "./schema";
 
-const prisma = new PrismaClient({ adapter: new PrismaMariaDb(process.env.DATABASE_URL!) });
+const t = schema;
+
+// Same settings as src/lib/db.ts: UTC dates, camelCase ⇄ snake_case columns
+const pool = mysql.createPool({ uri: process.env.DATABASE_URL, timezone: "Z" });
+const db = drizzle({ client: pool, schema: { ...schema, ...relations }, casing: "snake_case", mode: "planetscale" });
+
+/** Insert one row and return its new auto-increment id */
+async function insertId(query: { $returningId: () => PromiseLike<unknown[]> }): Promise<number> {
+  const [row] = (await query.$returningId()) as { id: number }[];
+  return Number(row.id);
+}
+
+/** Distinct ids of a list of rows (keeps the first occurrence order) */
+const uniqueIds = (rows: { id: number }[]) => [...new Set(rows.map((r) => r.id))];
 
 const slug = (s: string) => s.toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
@@ -35,49 +55,54 @@ const OFFICE_HOURS = {
 };
 
 async function clear() {
-  // Order matters because of foreign keys
-  await prisma.analyticsEvent.deleteMany();
-  await prisma.visitor.deleteMany();
-  await prisma.orderItem.deleteMany();
-  await prisma.order.deleteMany();
-  await prisma.product.deleteMany();
-  await prisma.productCategory.deleteMany();
-  await prisma.blogRating.deleteMany();
-  await prisma.blogComment.deleteMany();
-  await prisma.blogPost.deleteMany();
-  await prisma.blogTag.deleteMany();
-  await prisma.blogCategory.deleteMany();
-  await prisma.planOrder.deleteMany();
-  await prisma.review.deleteMany();
-  await prisma.appointmentRequest.deleteMany();
-  await prisma.providerMessage.deleteMany();
-  await prisma.providerFaq.deleteMany();
-  await prisma.providerVideo.deleteMany();
-  await prisma.galleryImage.deleteMany();
-  await prisma.providerLocation.deleteMany();
-  await prisma.user.deleteMany({ where: { role: "PROVIDER" } });
-  await prisma.provider.deleteMany();
-  await prisma.popularSearch.deleteMany();
-  await prisma.condition.deleteMany();
-  await prisma.specialty.deleteMany();
-  await prisma.insurance.deleteMany();
-  await prisma.city.deleteMany();
-  await prisma.plan.deleteMany();
-  await prisma.contentBlock.deleteMany();
-  await prisma.testimonial.deleteMany();
-  await prisma.cmsPage.deleteMany();
-  await prisma.pageSeo.deleteMany();
+  // Order matters because of foreign keys (children before parents)
+  await db.delete(t.analyticsEvents);
+  await db.delete(t.visitors);
+  await db.delete(t.orderItems);
+  await db.delete(t.orders);
+  await db.delete(t.products);
+  await db.delete(t.productCategories);
+  await db.delete(t.blogRatings);
+  await db.delete(t.blogComments);
+  await db.delete(t.blogPostTags);
+  await db.delete(t.blogPosts);
+  await db.delete(t.blogTags);
+  await db.delete(t.blogCategories);
+  await db.delete(t.planOrders);
+  await db.delete(t.reviews);
+  await db.delete(t.appointmentRequests);
+  await db.delete(t.providerMessages);
+  await db.delete(t.providerFaqs);
+  await db.delete(t.providerVideos);
+  await db.delete(t.galleryImages);
+  await db.delete(t.providerLocations);
+  await db.delete(t.providerConditions);
+  await db.delete(t.providerSpecialties);
+  await db.delete(t.providerInsurances);
+  await db.delete(t.users).where(eq(t.users.role, "PROVIDER"));
+  await db.delete(t.providers);
+  await db.delete(t.popularSearches);
+  await db.delete(t.conditions);
+  await db.delete(t.specialties);
+  await db.delete(t.insurances);
+  await db.delete(t.cities);
+  await db.delete(t.plans);
+  await db.delete(t.contentBlocks);
+  await db.delete(t.testimonials);
+  await db.delete(t.cmsPages);
+  await db.delete(t.pageSeo);
 
   // MySQL keeps counting AUTO_INCREMENT IDs after rows are deleted – restart the counters
   // of the emptied tables so a fresh seed starts at id 1 again.
-  const tables = [
-    "AnalyticsEvent", "OrderItem", "Order", "Product", "ProductCategory", "BlogRating", "BlogComment", "BlogPost", "BlogTag", "BlogCategory",
-    "PlanOrder", "Review", "AppointmentRequest", "ProviderMessage", "ProviderFaq", "ProviderVideo", "GalleryImage", "ProviderLocation", "Provider",
-    "PopularSearch", "Condition", "Specialty", "Insurance", "City", "Plan", "ContentBlock", "Testimonial", "CmsPage", "PageSeo",
+  const tables: Table[] = [
+    t.analyticsEvents, t.orderItems, t.orders, t.products, t.productCategories, t.blogRatings, t.blogComments, t.blogPosts, t.blogTags, t.blogCategories,
+    t.planOrders, t.reviews, t.appointmentRequests, t.providerMessages, t.providerFaqs, t.providerVideos, t.galleryImages, t.providerLocations, t.providers,
+    t.popularSearches, t.conditions, t.specialties, t.insurances, t.cities, t.plans, t.contentBlocks, t.testimonials, t.cmsPages, t.pageSeo,
   ];
-  for (const t of tables) {
-    // On an empty table MySQL resets the counter to 1 (or MAX(id)+1 if rows remain)
-    await prisma.$executeRawUnsafe(`ALTER TABLE \`${t}\` AUTO_INCREMENT = 1`);
+  for (const table of tables) {
+    // On an empty table MySQL resets the counter to 1 (or MAX(id)+1 if rows remain).
+    // getTableName() gives the real (snake_case) MySQL table name, e.g. "analytics_events".
+    await db.execute(sql.raw(`ALTER TABLE \`${getTableName(table)}\` AUTO_INCREMENT = 1`));
   }
 }
 
@@ -88,37 +113,37 @@ async function main() {
   // ───────────── Admin ─────────────
   const adminEmail = process.env.SEED_ADMIN_EMAIL || "admin@rangedoc.com";
   const adminPass = process.env.SEED_ADMIN_PASSWORD || "Admin@12345";
-  await prisma.user.upsert({
-    where: { email: adminEmail },
-    update: {},
-    create: { name: "Site Admin", email: adminEmail, passwordHash: await bcrypt.hash(adminPass, 12), role: "ADMIN" },
-  });
+  // Create the admin only if that email doesn't exist yet (an existing account is left unchanged)
+  const existingAdmin = await db.query.users.findFirst({ where: eq(t.users.email, adminEmail), columns: { id: true } });
+  if (!existingAdmin) {
+    await db.insert(t.users).values({ name: "Site Admin", email: adminEmail, passwordHash: await bcrypt.hash(adminPass, 12), role: "ADMIN" });
+  }
 
   // ───────────── Plans ─────────────
-  const free = await prisma.plan.create({
-    data: {
+  const freeId = await insertId(
+    db.insert(t.plans).values({
       name: "Free Claimed Profile", slug: "free", tagline: "Get started and take control of your profile.", priceCents: 0, interval: "LIFETIME",
       isFree: true, priceNote: "Always free", ctaLabel: "Claim Your Profile (Free)", sortOrder: 1,
       features: ["Claim and verify your profile", "Edit your basic information", "Add your specialties and services", "Show accepted insurance plans", "Add photos (up to 5)", "Show if you're accepting new patients"],
       maxPhotos: 5, maxLocations: 1, maxFaqs: 3, allowReviews: false, allowShareSave: false, allowRatingDisplay: false, allowVideo: false, allowAnalytics: false, allowAllFaqs: false, searchPriority: 0,
-    },
-  });
-  const pro = await prisma.plan.create({
-    data: {
+    }),
+  );
+  const proId = await insertId(
+    db.insert(t.plans).values({
       name: "Pro Profile", slug: "pro", tagline: "More tools. More visibility. More patients.", priceCents: 2999, interval: "MONTH",
       isPopular: true, badge: "MOST POPULAR", priceNote: "Cancel anytime", ctaLabel: "Upgrade to Pro", sortOrder: 2,
       features: ["Everything in Free, plus:", "Intro video + video gallery (6 videos)", "Social links: Facebook, X, LinkedIn, Pinterest, YouTube", "Unlimited photos", "Multiple practice locations", "Patient reviews & star rating", "View call and email click analytics", "Priority placement in search results", "Save & share buttons on your profile"],
       maxPhotos: 100, maxLocations: 10, maxFaqs: 50, allowReviews: true, allowShareSave: true, allowRatingDisplay: true, allowVideo: true, maxVideos: 6, allowSocialLinks: true, allowAnalytics: true, allowAllFaqs: true, searchPriority: 10,
-    },
-  });
-  const featuredPlan = await prisma.plan.create({
-    data: {
+    }),
+  );
+  const featuredPlanId = await insertId(
+    db.insert(t.plans).values({
       name: "Featured Profile", slug: "featured", tagline: "Top placement and a featured badge.", priceCents: 7900, interval: "MONTH",
       badge: "BEST VISIBILITY", priceNote: "Cancel anytime", ctaLabel: "Go Featured", sortOrder: 3, active: true,
       features: ["Everything in Pro, plus:", "Featured provider badge", "Top of search results", "Home page placement eligibility", "Priority support"],
       maxPhotos: 200, maxLocations: 25, maxFaqs: 100, allowReviews: true, allowShareSave: true, allowRatingDisplay: true, allowVideo: true, maxVideos: 20, allowSocialLinks: true, allowAnalytics: true, allowAllFaqs: true, featuredBadge: true, searchPriority: 50,
-    },
-  });
+    }),
+  );
 
   // ───────────── Conditions ─────────────
   const conditionData = [
@@ -136,29 +161,26 @@ async function main() {
     ["Wrist & Hand", "wrist-hand", "Wrist & Hand Pain", "carpal tunnel, wrist pain, hand pain, tennis elbow"],
     ["Not Sure", "not-sure", "Not Sure", "general pain, chronic pain, not sure"],
   ] as const;
-  const conditions: Condition[] = [];
-  for (const [i, [short, s, name, keywords]] of conditionData.entries()) {
-    conditions.push(
-      await prisma.condition.create({
-        data: {
-          name, slug: s === "back-spine" ? "back-pain" : s === "neck" ? "neck-pain" : s === "shoulder" ? "shoulder-pain" : s === "hip" ? "hip-pain" : s === "knee" ? "knee-pain" : s, shortName: short,
-          image: `/seed/cond-${s}.svg`, keywords, sortOrder: i, showOnHome: true,
-          description: `Find licensed physical therapists and chiropractors who specialize in ${name.toLowerCase()}. Compare ratings, insurance and availability, then request an appointment online.`,
-        },
-      }),
-    );
-  }
+  await db.insert(t.conditions).values(
+    conditionData.map(([short, s, name, keywords], i) => ({
+      name, slug: s === "back-spine" ? "back-pain" : s === "neck" ? "neck-pain" : s === "shoulder" ? "shoulder-pain" : s === "hip" ? "hip-pain" : s === "knee" ? "knee-pain" : s, shortName: short,
+      image: `/seed/cond-${s}.svg`, keywords, sortOrder: i, showOnHome: true,
+      description: `Find licensed physical therapists and chiropractors who specialize in ${name.toLowerCase()}. Compare ratings, insurance and availability, then request an appointment online.`,
+    })),
+  );
+  // Read the rows back (with their new ids) in the order they were created
+  const conditions: Condition[] = await db.select().from(t.conditions).orderBy(asc(t.conditions.sortOrder), asc(t.conditions.id));
   const C = (s: string) => conditions.find((c) => c.slug === s)!;
 
   // ───────────── Specialties & insurances ─────────────
   const specialtyNames = ["Manual Therapy", "Sports Physical Therapy", "Spinal Adjustments", "Dry Needling", "Pelvic Floor Therapy", "Vestibular Therapy", "Post-Surgery Rehab", "Orthopedic Rehab", "Women's Health", "Pediatric Therapy", "Movement & Exercise Therapy", "Postural Correction", "Chiropractic Care", "Injury Rehab"];
-  const specialties: Specialty[] = [];
-  for (const [i, name] of specialtyNames.entries()) specialties.push(await prisma.specialty.create({ data: { name, slug: slug(name), sortOrder: i } }));
+  await db.insert(t.specialties).values(specialtyNames.map((name, i) => ({ name, slug: slug(name), sortOrder: i })));
+  const specialties: Specialty[] = await db.select().from(t.specialties).orderBy(asc(t.specialties.sortOrder), asc(t.specialties.id));
   const S = (name: string) => specialties.find((s) => s.name === name)!;
 
   const insuranceNames = ["Blue Cross Blue Shield", "Aetna", "UnitedHealthcare", "Cigna", "Medicare", "Humana", "Medicaid", "Tricare", "Kaiser Permanente", "Self-Pay / Out-of-Network"];
-  const insurances: Insurance[] = [];
-  for (const [i, name] of insuranceNames.entries()) insurances.push(await prisma.insurance.create({ data: { name, slug: slug(name), sortOrder: i } }));
+  await db.insert(t.insurances).values(insuranceNames.map((name, i) => ({ name, slug: slug(name), sortOrder: i })));
+  const insurances: Insurance[] = await db.select().from(t.insurances).orderBy(asc(t.insurances.sortOrder), asc(t.insurances.id));
 
   // ───────────── Cities ─────────────
   const cityData: [string, string, string, number, number, string, boolean][] = [
@@ -177,18 +199,14 @@ async function main() {
     ["San Diego", "California", "CA", 32.7157, -117.1611, "92101,92102,92103,92104,92108,92109,92116", false],
     ["San Antonio", "Texas", "TX", 29.4241, -98.4936, "78201,78202,78204,78205,78209,78212,78215", false],
   ];
-  const cities: City[] = [];
-  for (const [i, [name, state, code, lat, lng, zips, featured]] of cityData.entries()) {
-    cities.push(
-      await prisma.city.create({
-        data: {
-          name, state, stateCode: code, slug: slug(`${name}-${code}`), lat, lng, zipCodes: zips, featured, sortOrder: i,
-          image: `/seed/city-${slug(name)}.svg`,
-          description: `Find top-rated physical therapists and chiropractors in ${name}, ${code}. Compare providers, insurance and availability.`,
-        },
-      }),
-    );
-  }
+  await db.insert(t.cities).values(
+    cityData.map(([name, state, code, lat, lng, zips, featured], i) => ({
+      name, state, stateCode: code, slug: slug(`${name}-${code}`), lat, lng, zipCodes: zips, featured, sortOrder: i,
+      image: `/seed/city-${slug(name)}.svg`,
+      description: `Find top-rated physical therapists and chiropractors in ${name}, ${code}. Compare providers, insurance and availability.`,
+    })),
+  );
+  const cities: City[] = await db.select().from(t.cities).orderBy(asc(t.cities.sortOrder), asc(t.cities.id));
   const city = (name: string) => cities.find((c) => c.name === name)!;
 
   // ───────────── Providers ─────────────
@@ -229,8 +247,9 @@ async function main() {
       const practice = `${pick(clinicWords)}${type === "CHIROPRACTOR" ? " Chiropractic" : " Physical Therapy"}`;
 
       const isSarah = full === "Sarah Kim" && cityName === "Austin";
-      const provider = await prisma.provider.create({
-        data: {
+      // NOTE: keep the property order – rand() is called while building this object
+      const providerId = await insertId(
+        db.insert(t.providers).values({
           slug: s, prefix: "Dr.", firstName, lastName, credentials, providerType: type,
           headline: type === "CHIROPRACTOR" ? "Chiropractor" : "Physical Therapist",
           practiceName: `${practice} ${cityName}`,
@@ -271,36 +290,37 @@ async function main() {
           endorsement: tier === "pro" || tier === "featured" ? `Recommended by ${8 + (n % 10)}+ referring physicians in the ${cityName} area.` : null,
           featured: isSarah || (claimed && ["Michael Torres", "Jennifer Patel"].includes(full)),
           featuredOrder: isSarah ? 0 : n,
-          planId: tier === "featured" ? featuredPlan.id : tier === "pro" || isSarah ? pro.id : tier === "free" ? free.id : null,
+          planId: tier === "featured" ? featuredPlanId : tier === "pro" || isSarah ? proId : tier === "free" ? freeId : null,
           planExpiresAt: tier === "featured" || tier === "pro" || isSarah ? new Date(Date.now() + 1000 * 60 * 60 * 24 * 30) : null,
           cityId: c.id,
-          conditions: { connect: provConds.map((x) => ({ id: x.id })) },
-          specialties: { connect: provSpecs.map((x) => ({ id: x.id })) },
-          insurances: { connect: provIns.map((x) => ({ id: x.id })) },
-        },
-      });
-      createdProviders.push({ id: provider.id, slug: provider.slug, tier: isSarah ? "pro" : tier });
+        }),
+      );
+      // Many-to-many links (conditions / specialties / insurances) go into the join tables.
+      // The random picks can repeat a fixed item (e.g. "back-pain"), so ids are de-duplicated –
+      // the join tables have a composite primary key.
+      await db.insert(t.providerConditions).values(uniqueIds(provConds).map((conditionId) => ({ providerId, conditionId })));
+      await db.insert(t.providerSpecialties).values(uniqueIds(provSpecs).map((specialtyId) => ({ providerId, specialtyId })));
+      if (provIns.length) await db.insert(t.providerInsurances).values(uniqueIds(provIns).map((insuranceId) => ({ providerId, insuranceId })));
+      createdProviders.push({ id: providerId, slug: s, tier: isSarah ? "pro" : tier });
 
       // Locations – spread around the city centre (paid plans get a second clinic)
       const locCount = tier === "pro" || tier === "featured" || isSarah ? 2 : 1;
       for (let l = 0; l < locCount; l++) {
         const zip = c.zipCodes!.split(",")[(n + l) % 7];
-        await prisma.providerLocation.create({
-          data: {
-            providerId: provider.id, name: l === 0 ? `${practice} ${cityName}` : `${practice} ${pick(["Westlake", "North", "Downtown", "East Side", "South"])}`,
-            address: `${1000 + ((n * 97 + l * 311) % 8000)} ${pick(["Wellness Drive", "Main Street", "Congress Ave", "Oak Lane", "Park Blvd", "Lakeview Rd"])}`,
-            cityId: c.id, cityName, state: c.stateCode, zip,
-            lat: c.lat + (rand() - 0.5) * 0.16, lng: c.lng + (rand() - 0.5) * 0.18,
-            phone: null, isPrimary: l === 0, sortOrder: l,
-          },
+        await db.insert(t.providerLocations).values({
+          providerId, name: l === 0 ? `${practice} ${cityName}` : `${practice} ${pick(["Westlake", "North", "Downtown", "East Side", "South"])}`,
+          address: `${1000 + ((n * 97 + l * 311) % 8000)} ${pick(["Wellness Drive", "Main Street", "Congress Ave", "Oak Lane", "Park Blvd", "Lakeview Rd"])}`,
+          cityId: c.id, cityName, state: c.stateCode, zip,
+          lat: c.lat + (rand() - 0.5) * 0.16, lng: c.lng + (rand() - 0.5) * 0.18,
+          phone: null, isPrimary: l === 0, sortOrder: l,
         });
       }
 
       // Gallery photos
       const photoCount = tier === "unclaimed" ? 2 : tier === "free" ? 4 : 6;
-      for (let g = 0; g < photoCount; g++) {
-        await prisma.galleryImage.create({ data: { providerId: provider.id, url: `/seed/clinic-${((n + g) % 6) + 1}.svg`, alt: `${practice} clinic photo ${g + 1}`, sortOrder: g } });
-      }
+      await db.insert(t.galleryImages).values(
+        Array.from({ length: photoCount }, (_, g) => ({ providerId, url: `/seed/clinic-${((n + g) % 6) + 1}.svg`, alt: `${practice} clinic photo ${g + 1}`, sortOrder: g })),
+      );
 
       // FAQs
       const faqs = [
@@ -310,10 +330,10 @@ async function main() {
         ["Do you offer telehealth visits?", "Yes, virtual visits are available for follow-ups, exercise coaching and ergonomic assessments."],
         ["What insurance do you accept?", `We accept ${provIns.slice(0, 3).map((i) => i.name).join(", ")} and more. Self-pay options are also available.`],
       ];
-      for (const [fi, [question, answer]] of faqs.entries()) {
-        if (tier === "unclaimed" && fi > 2) break;
-        await prisma.providerFaq.create({ data: { providerId: provider.id, question, answer, sortOrder: fi } });
-      }
+      // Unclaimed profiles only get the first 3 FAQs
+      await db.insert(t.providerFaqs).values(
+        faqs.filter((_, fi) => !(tier === "unclaimed" && fi > 2)).map(([question, answer], fi) => ({ providerId, question, answer, sortOrder: fi })),
+      );
 
       // Reviews for paid providers
       if (tier === "pro" || tier === "featured" || isSarah) {
@@ -322,30 +342,28 @@ async function main() {
           [5, "Back to running", "After three months of knee pain I'm back to running pain-free. The exercises were easy to follow."],
           [4, "Great experience", "Friendly staff, on time, and a clear treatment plan. Parking can be tricky."],
         ] as const;
-        for (const [rating, title, body] of reviews) {
-          await prisma.review.create({ data: { providerId: provider.id, rating, title, body, authorName: pick(["Jamie S.", "Marcus C.", "Emily R.", "Daniel B.", "Sophia L.", "Chris P."]), status: "APPROVED" } });
-        }
+        await db.insert(t.reviews).values(
+          reviews.map(([rating, title, body]) => ({ providerId, rating, title, body, authorName: pick(["Jamie S.", "Marcus C.", "Emily R.", "Daniel B.", "Sophia L.", "Chris P."]), status: "APPROVED" as const })),
+        );
       }
     }
   }
 
   // Demo provider login (Sarah Kim, Pro plan)
-  const sarah = await prisma.provider.findFirst({ where: { firstName: "Sarah", lastName: "Kim" } });
+  const sarah = await db.query.providers.findFirst({ where: and(eq(t.providers.firstName, "Sarah"), eq(t.providers.lastName, "Kim")) });
   if (sarah) {
-    await prisma.user.create({
-      data: { name: "Dr. Sarah Kim", email: "provider@rangedoc.com", passwordHash: await bcrypt.hash("Provider@123", 12), role: "PROVIDER", providerId: sarah.id },
-    });
+    await db.insert(t.users).values({ name: "Dr. Sarah Kim", email: "provider@rangedoc.com", passwordHash: await bcrypt.hash("Provider@123", 12), role: "PROVIDER", providerId: sarah.id });
     // Some leads for her dashboard
     const people = [["Jamie", "Smith"], ["Marcus", "Chen"], ["Emily", "Rodriguez"], ["Daniel", "Brooks"], ["Sophia", "Lee"]];
     for (const [i, [firstName, lastName]] of people.entries()) {
       const d = new Date();
       d.setUTCDate(d.getUTCDate() + i + 1);
       d.setUTCHours(0, 0, 0, 0);
-      await prisma.appointmentRequest.create({
-        data: { providerId: sarah.id, date: d, timeSlot: ["09:00", "10:30", "13:00", "15:30", "11:00"][i], firstName, lastName, email: `${firstName.toLowerCase()}@example.com`, phone: "(512) 555-0199", reason: ["Lower back pain for 3 weeks", "Sports injury rehabilitation", "Knee pain treatment options", "Dry needling questions", "Post-surgical rehab"][i], insurance: "Aetna", status: i < 2 ? "NEW" : "CONFIRMED" },
+      await db.insert(t.appointmentRequests).values({
+        providerId: sarah.id, date: d, timeSlot: ["09:00", "10:30", "13:00", "15:30", "11:00"][i], firstName, lastName, email: `${firstName.toLowerCase()}@example.com`, phone: "(512) 555-0199", reason: ["Lower back pain for 3 weeks", "Sports injury rehabilitation", "Knee pain treatment options", "Dry needling questions", "Post-surgical rehab"][i], insurance: "Aetna", status: i < 2 ? "NEW" : "CONFIRMED",
       });
-      await prisma.providerMessage.create({
-        data: { providerId: sarah.id, name: `${firstName} ${lastName}`, contact: `${firstName.toLowerCase()}@example.com`, subject: ["Question about back pain", "Do you take BCBS?", "Availability next week", "Dry needling", "Post-surgery rehab"][i], message: "Hi, I found you on RangeDoc and wanted to ask a quick question about treatment options and availability. Thanks!", read: i > 1 },
+      await db.insert(t.providerMessages).values({
+        providerId: sarah.id, name: `${firstName} ${lastName}`, contact: `${firstName.toLowerCase()}@example.com`, subject: ["Question about back pain", "Do you take BCBS?", "Availability next week", "Dry needling", "Post-surgery rehab"][i], message: "Hi, I found you on RangeDoc and wanted to ask a quick question about treatment options and availability. Thanks!", read: i > 1,
       });
     }
   }
@@ -354,13 +372,15 @@ async function main() {
   const devices = ["Desktop", "Mobile", "Mobile", "Tablet"];
   const browsers = ["Chrome", "Safari", "Firefox", "Edge"];
   const visitorCities = ["Austin", "Houston", "Dallas", "New York", "Denver", "Seattle", "Chicago"];
-  const events: { type: "PAGE_VIEW" | "PROFILE_VIEW" | "SEARCH_IMPRESSION" | "SEARCH_CLICK" | "CALL_CLICK" | "EMAIL_CLICK" | "WEBSITE_CLICK" | "APPOINTMENT_CLICK" | "GALLERY_VIEW" | "SEARCH"; providerId: number | null; path: string; device: string; browser: string; city: string; country: string; visitorId: string; createdAt: Date; meta?: object }[] = [];
+  const events: { type: EventType; providerId: number | null; path: string; device: string; browser: string; city: string; country: string; visitorId: string; createdAt: Date; meta?: Record<string, unknown> }[] = [];
   const visitorIds: string[] = [];
+  const visitorRows: (typeof t.visitors.$inferInsert)[] = [];
   for (let v = 0; v < 120; v++) {
     const id = `demo-visitor-${v}`;
     visitorIds.push(id);
-    await prisma.visitor.create({ data: { id, device: pick(devices), browser: pick(browsers), os: pick(["Windows", "macOS", "iOS", "Android"]), city: pick(visitorCities), country: "US", visitCount: 1 + Math.floor(rand() * 5), pageViews: 3 + Math.floor(rand() * 20), firstSeenAt: new Date(Date.now() - rand() * 30 * 864e5) } });
+    visitorRows.push({ id, device: pick(devices), browser: pick(browsers), os: pick(["Windows", "macOS", "iOS", "Android"]), city: pick(visitorCities), country: "US", visitCount: 1 + Math.floor(rand() * 5), pageViews: 3 + Math.floor(rand() * 20), firstSeenAt: new Date(Date.now() - rand() * 30 * 864e5) });
   }
+  await db.insert(t.visitors).values(visitorRows);
   for (let day = 0; day < 30; day++) {
     const base = 20 + Math.floor(rand() * 25) + (day > 15 ? 10 : 0);
     for (let e = 0; e < base; e++) {
@@ -394,35 +414,37 @@ async function main() {
       }
     }
   }
-  for (let i = 0; i < events.length; i += 1000) await prisma.analyticsEvent.createMany({ data: events.slice(i, i + 1000) });
+  // Insert in chunks of 1000 rows (one huge INSERT could exceed MySQL's max_allowed_packet).
+  // Every row gets an explicit `meta` (null when unused) so all rows have the same columns.
+  for (let i = 0; i < events.length; i += 1000) {
+    await db.insert(t.analyticsEvents).values(events.slice(i, i + 1000).map((e) => ({ ...e, meta: e.meta ?? null })));
+  }
 
   // ───────────── Home content ─────────────
-  await prisma.contentBlock.createMany({
-    data: [
-      { section: "home_hero_badges", icon: "ShieldCheck", title: "Licensed professionals", sortOrder: 1 },
-      { section: "home_hero_badges", icon: "Users", title: "Real patient reviews", sortOrder: 2 },
-      { section: "home_hero_badges", icon: "CalendarCheck", title: "Easy to connect", sortOrder: 3 },
-      { section: "home_stats", icon: "Users", title: "10,000+", text: "PTs & Chiropractors Listed", sortOrder: 1 },
-      { section: "home_stats", icon: "ShieldCheck", title: "License Verified", text: "Providers", sortOrder: 2 },
-      { section: "home_stats", icon: "MapPin", title: "Local Care", text: "Near You", sortOrder: 3 },
-      { section: "home_stats", icon: "BadgeCheck", title: "Major Insurances", text: "Accepted", sortOrder: 4 },
-      { section: "claim_steps", icon: "Search", title: "Find your profile", text: "Search for your name and practice location.", sortOrder: 1 },
-      { section: "claim_steps", icon: "ShieldCheck", title: "Verify ownership", text: "Securely confirm you're the provider.", sortOrder: 2 },
-      { section: "claim_steps", icon: "CheckCircle2", title: "Complete your profile", text: "Add details, photos, insurance and more.", sortOrder: 3 },
-      { section: "claim_why", icon: "Users", title: "Reach more patients", text: "Be visible to people actively seeking care in your area.", sortOrder: 1 },
-      { section: "claim_why", icon: "Star", title: "Build credibility", text: "Showcase your experience, specialties and patient reviews.", sortOrder: 2 },
-      { section: "claim_why", icon: "BarChart3", title: "Show what makes you unique", text: "Add photos, videos, services and accepted insurance plans.", sortOrder: 3 },
-      { section: "claim_why", icon: "Heart", title: "Save time", text: "Answer common questions up front and attract better-fit patients.", sortOrder: 4 },
-      { section: "claim_why", icon: "Leaf", title: "Be part of a healthier future", text: "Join a trusted network that's helping more people move and live better.", sortOrder: 5 },
-      { section: "products_trust", icon: "ShieldCheck", title: "Expert curated", text: "Picked by PTs & Chiropractors", sortOrder: 1 },
-      { section: "products_trust", icon: "Truck", title: "Trusted brands", text: "Top-rated, reputable products", sortOrder: 2 },
-      { section: "products_trust", icon: "Heart", title: "Support your progress", text: "Move better. Live brighter.", sortOrder: 3 },
-      { section: "products_howto", icon: "Lightbulb", title: "1. Identify your pain area", text: "Focus on the area that needs support most.", sortOrder: 1 },
-      { section: "products_howto", icon: "Settings", title: "2. Choose the right type", text: "From braces to massage tools, find what fits your needs.", sortOrder: 2 },
-      { section: "products_howto", icon: "CheckCircle2", title: "3. Look for trusted brands", text: "We feature proven, high-quality products.", sortOrder: 3 },
-      { section: "products_howto", icon: "PersonStanding", title: "4. Pair with expert care", text: "Get the best results by combining tools with care from a PT or chiropractor.", sortOrder: 4 },
-    ],
-  });
+  await db.insert(t.contentBlocks).values([
+    { section: "home_hero_badges", icon: "ShieldCheck", title: "Licensed professionals", sortOrder: 1 },
+    { section: "home_hero_badges", icon: "Users", title: "Real patient reviews", sortOrder: 2 },
+    { section: "home_hero_badges", icon: "CalendarCheck", title: "Easy to connect", sortOrder: 3 },
+    { section: "home_stats", icon: "Users", title: "10,000+", text: "PTs & Chiropractors Listed", sortOrder: 1 },
+    { section: "home_stats", icon: "ShieldCheck", title: "License Verified", text: "Providers", sortOrder: 2 },
+    { section: "home_stats", icon: "MapPin", title: "Local Care", text: "Near You", sortOrder: 3 },
+    { section: "home_stats", icon: "BadgeCheck", title: "Major Insurances", text: "Accepted", sortOrder: 4 },
+    { section: "claim_steps", icon: "Search", title: "Find your profile", text: "Search for your name and practice location.", sortOrder: 1 },
+    { section: "claim_steps", icon: "ShieldCheck", title: "Verify ownership", text: "Securely confirm you're the provider.", sortOrder: 2 },
+    { section: "claim_steps", icon: "CheckCircle2", title: "Complete your profile", text: "Add details, photos, insurance and more.", sortOrder: 3 },
+    { section: "claim_why", icon: "Users", title: "Reach more patients", text: "Be visible to people actively seeking care in your area.", sortOrder: 1 },
+    { section: "claim_why", icon: "Star", title: "Build credibility", text: "Showcase your experience, specialties and patient reviews.", sortOrder: 2 },
+    { section: "claim_why", icon: "BarChart3", title: "Show what makes you unique", text: "Add photos, videos, services and accepted insurance plans.", sortOrder: 3 },
+    { section: "claim_why", icon: "Heart", title: "Save time", text: "Answer common questions up front and attract better-fit patients.", sortOrder: 4 },
+    { section: "claim_why", icon: "Leaf", title: "Be part of a healthier future", text: "Join a trusted network that's helping more people move and live better.", sortOrder: 5 },
+    { section: "products_trust", icon: "ShieldCheck", title: "Expert curated", text: "Picked by PTs & Chiropractors", sortOrder: 1 },
+    { section: "products_trust", icon: "Truck", title: "Trusted brands", text: "Top-rated, reputable products", sortOrder: 2 },
+    { section: "products_trust", icon: "Heart", title: "Support your progress", text: "Move better. Live brighter.", sortOrder: 3 },
+    { section: "products_howto", icon: "Lightbulb", title: "1. Identify your pain area", text: "Focus on the area that needs support most.", sortOrder: 1 },
+    { section: "products_howto", icon: "Settings", title: "2. Choose the right type", text: "From braces to massage tools, find what fits your needs.", sortOrder: 2 },
+    { section: "products_howto", icon: "CheckCircle2", title: "3. Look for trusted brands", text: "We feature proven, high-quality products.", sortOrder: 3 },
+    { section: "products_howto", icon: "PersonStanding", title: "4. Pair with expert care", text: "Get the best results by combining tools with care from a PT or chiropractor.", sortOrder: 4 },
+  ]);
 
   const popular = [
     ["Sports Physical Therapy", "PHYSICAL_THERAPIST", null, "Sports Physical Therapy"],
@@ -434,23 +456,24 @@ async function main() {
     ["Chiropractic for Neck Pain", "CHIROPRACTOR", "neck-pain", null],
     ["Chiropractic for Back Pain", "CHIROPRACTOR", "back-pain", null],
   ] as const;
-  for (const [i, [label, type, cond, spec]] of popular.entries()) {
-    await prisma.popularSearch.create({ data: { label, providerType: type, conditionId: cond ? C(cond).id : null, specialtyId: spec ? S(spec).id : null, sortOrder: i } });
-  }
+  await db.insert(t.popularSearches).values(
+    popular.map(([label, type, cond, spec], i) => ({ label, providerType: type, conditionId: cond ? C(cond).id : null, specialtyId: spec ? S(spec).id : null, sortOrder: i })),
+  );
 
-  await prisma.testimonial.createMany({
-    data: [
-      { name: "Dr. Sarah Kim, DPT", role: "Physical Therapist", location: "Denver, CO", avatar: "https://randomuser.me/api/portraits/women/44.jpg", quote: "Claiming my profile was quick and easy. I've already had new patients reach out through RangeDoc!", rating: 5, sortOrder: 1 },
-      { name: "Dr. Michael Torres, DC", role: "Chiropractor", location: "Austin, TX", avatar: "https://randomuser.me/api/portraits/men/32.jpg", quote: "The Pro profile is worth it. I can see how many people are calling and emailing, and it helps me stand out.", rating: 5, sortOrder: 2 },
-      { name: "Dr. Emily Carter, DPT", role: "Physical Therapist", location: "Portland, OR", avatar: "https://randomuser.me/api/portraits/women/68.jpg", quote: "I love being able to showcase my approach with photos and a video. It helps patients get to know me.", rating: 5, sortOrder: 3 },
-    ],
-  });
+  await db.insert(t.testimonials).values([
+    { name: "Dr. Sarah Kim, DPT", role: "Physical Therapist", location: "Denver, CO", avatar: "https://randomuser.me/api/portraits/women/44.jpg", quote: "Claiming my profile was quick and easy. I've already had new patients reach out through RangeDoc!", rating: 5, sortOrder: 1 },
+    { name: "Dr. Michael Torres, DC", role: "Chiropractor", location: "Austin, TX", avatar: "https://randomuser.me/api/portraits/men/32.jpg", quote: "The Pro profile is worth it. I can see how many people are calling and emailing, and it helps me stand out.", rating: 5, sortOrder: 2 },
+    { name: "Dr. Emily Carter, DPT", role: "Physical Therapist", location: "Portland, OR", avatar: "https://randomuser.me/api/portraits/women/68.jpg", quote: "I love being able to showcase my approach with photos and a video. It helps patients get to know me.", rating: 5, sortOrder: 3 },
+  ]);
 
   // ───────────── Blog ─────────────
-  const cats = await Promise.all(
-    ["Guides", "Back & Neck", "Exercise & Recovery", "Wellness"].map((name) => prisma.blogCategory.create({ data: { name, slug: slug(name), description: `Articles about ${name.toLowerCase()} from licensed providers.` } })),
+  await db.insert(t.blogCategories).values(
+    ["Guides", "Back & Neck", "Exercise & Recovery", "Wellness"].map((name) => ({ name, slug: slug(name), description: `Articles about ${name.toLowerCase()} from licensed providers.` })),
   );
-  const tags = await Promise.all(["back pain", "chiropractic", "physical therapy", "exercise", "posture", "sleep", "knee"].map((name) => prisma.blogTag.create({ data: { name, slug: slug(name) } })));
+  // Read back in insert order (ids are consecutive within one INSERT)
+  const cats = await db.select().from(t.blogCategories).orderBy(asc(t.blogCategories.id));
+  await db.insert(t.blogTags).values(["back pain", "chiropractic", "physical therapy", "exercise", "posture", "sleep", "knee"].map((name) => ({ name, slug: slug(name) })));
+  const tags = await db.select().from(t.blogTags).orderBy(asc(t.blogTags.id));
   const T = (name: string) => tags.find((t) => t.name === name)!;
   const para = (topic: string) =>
     `<p>${topic} is one of the most common reasons people look for professional care. The good news: with the right guidance, most people improve significantly within a few weeks.</p>
@@ -468,22 +491,25 @@ async function main() {
     ["The Best Sleeping Positions for Neck Pain", "sleep-neck", 1, ["sleep", "posture"], false],
   ] as const;
   for (const [i, [title, img, catIdx, tagNames, featured]] of posts.entries()) {
-    await prisma.blogPost.create({
-      data: {
+    const postId = await insertId(
+      db.insert(t.blogPosts).values({
         title, slug: slug(title), excerpt: `Everything you need to know about ${title.toLowerCase()} — explained by licensed providers.`,
         content: para(title), coverImage: `/seed/blog-${img}.svg`, coverAlt: title, authorName: "RangeDoc Editorial Team",
-        categoryId: cats[catIdx].id, tags: { connect: tagNames.map((t) => ({ id: T(t).id })) }, published: true,
+        categoryId: cats[catIdx].id, published: true,
         publishedAt: new Date(Date.now() - i * 5 * 864e5), featured, readingMinutes: 4 + i, ratingSum: 23 + i, ratingCount: 5,
-      },
-    });
+      }),
+    );
+    // Post ↔ tag links
+    await db.insert(t.blogPostTags).values(tagNames.map((name) => ({ postId, tagId: T(name).id })));
   }
 
   // ───────────── Products ─────────────
-  const pcats = await Promise.all(
-    [["Back & Spine", "Bone"], ["Neck", "PersonStanding"], ["Shoulder", "Dumbbell"], ["Knee", "Footprints"], ["Hip", "Accessibility"], ["Sports Recovery", "Bike"], ["General Recovery", "Leaf"]].map(([name, icon], i) =>
-      prisma.productCategory.create({ data: { name, slug: slug(name), icon, sortOrder: i, description: `Recovery tools for ${name.toLowerCase()}.` } }),
-    ),
+  await db.insert(t.productCategories).values(
+    [["Back & Spine", "Bone"], ["Neck", "PersonStanding"], ["Shoulder", "Dumbbell"], ["Knee", "Footprints"], ["Hip", "Accessibility"], ["Sports Recovery", "Bike"], ["General Recovery", "Leaf"]].map(([name, icon], i) => ({
+      name, slug: slug(name), icon, sortOrder: i, description: `Recovery tools for ${name.toLowerCase()}.`,
+    })),
   );
+  const pcats = await db.select().from(t.productCategories).orderBy(asc(t.productCategories.id));
   const PC = (name: string) => pcats.find((c) => c.name === name)!;
   const products: [string, string, string, number, number | null, string, string, string, string][] = [
     ["Bauerfeind LumboTrain Back Brace", "back-brace", "Back & Spine", 11900, 14900, "Braces & Support", "Bauerfeind", "Targeted support for lower back pain and everyday movement.", "Pain Relief,Posture Support"],
@@ -499,16 +525,14 @@ async function main() {
     ["Chirp Yoga Wheel", "yoga-wheel", "Back & Spine", 3900, 5900, "Mobility & Stretching", "Chirp", "Improve flexibility, relieve back tension and open your spine.", "Mobility & Flexibility"],
     ["CEP Compression Sleeve", "compression-sleeve", "Sports Recovery", 5400, 6900, "Braces & Support", "CEP", "Boost circulation and recover faster.", "Recovery,Everyday Wellness"],
   ];
-  for (const [i, [name, img, cat, price, compare, type, brand, short, uses]] of products.entries()) {
-    await prisma.product.create({
-      data: {
-        name, slug: slug(name), shortDescription: short, priceCents: price, compareAtCents: compare, image: `/seed/product-${img}.svg`,
-        images: [`/seed/product-${img}.svg`], productType: type, brand, useCases: uses, categoryId: PC(cat).id, stock: 50, sku: `RD-${1000 + i}`,
-        featured: i < 4, sortOrder: i,
-        description: `<p>${short}</p><h3>Why providers recommend it</h3><ul><li>Designed for everyday comfort</li><li>Durable, easy to clean materials</li><li>Pairs well with a home exercise program</li></ul><p>These products support general wellness and are not a substitute for professional medical advice.</p>`,
-      },
-    });
-  }
+  await db.insert(t.products).values(
+    products.map(([name, img, cat, price, compare, type, brand, short, uses], i) => ({
+      name, slug: slug(name), shortDescription: short, priceCents: price, compareAtCents: compare, image: `/seed/product-${img}.svg`,
+      images: [`/seed/product-${img}.svg`], productType: type, brand, useCases: uses, categoryId: PC(cat).id, stock: 50, sku: `RD-${1000 + i}`,
+      featured: i < 4, sortOrder: i,
+      description: `<p>${short}</p><h3>Why providers recommend it</h3><ul><li>Designed for everyday comfort</li><li>Durable, easy to clean materials</li><li>Pairs well with a home exercise program</li></ul><p>These products support general wellness and are not a substitute for professional medical advice.</p>`,
+    })),
+  );
 
   // ───────────── CMS pages ─────────────
   const cms: [string, string, string | null][] = [
@@ -520,14 +544,12 @@ async function main() {
     ["Help Center", "help-center", "providers"],
     ["Provider Resources", "provider-resources", "providers"],
   ];
-  for (const [i, [title, s, group]] of cms.entries()) {
-    await prisma.cmsPage.create({
-      data: {
-        title, slug: s, footerGroup: group, sortOrder: i, excerpt: `${title} – RangeDoc`,
-        content: `<p>This is the <b>${title}</b> page. Edit this content any time from <em>Admin → Pages</em>.</p><h2>Our mission</h2><p>We help people find licensed physical therapists and chiropractors near them, and help providers grow their practices.</p>`,
-      },
-    });
-  }
+  await db.insert(t.cmsPages).values(
+    cms.map(([title, s, group], i) => ({
+      title, slug: s, footerGroup: group, sortOrder: i, excerpt: `${title} – RangeDoc`,
+      content: `<p>This is the <b>${title}</b> page. Edit this content any time from <em>Admin → Pages</em>.</p><h2>Our mission</h2><p>We help people find licensed physical therapists and chiropractors near them, and help providers grow their practices.</p>`,
+    })),
+  );
 
   // ───────────── SEO rows ─────────────
   const seoPages = [
@@ -539,9 +561,9 @@ async function main() {
     ["login", "Provider login", "Provider Login", null], ["register", "Provider registration", "Create Your Provider Account", null], ["cart", "Cart", "Your Cart", null],
     ["checkout", "Checkout", "Checkout", null], ["saved", "Saved providers", "Saved Providers", null],
   ] as const;
-  for (const [pageKey, label, metaTitle, metaDescription] of seoPages) {
-    await prisma.pageSeo.create({ data: { pageKey, label, metaTitle, metaDescription, noIndex: ["login", "register", "cart", "checkout", "saved"].includes(pageKey) } });
-  }
+  await db.insert(t.pageSeo).values(
+    seoPages.map(([pageKey, label, metaTitle, metaDescription]) => ({ pageKey, label, metaTitle, metaDescription, noIndex: ["login", "register", "cart", "checkout", "saved"].includes(pageKey) })),
+  );
 
   console.log(`Done. ${createdProviders.length} providers, ${events.length} analytics events.`);
   console.log(`Admin login:    ${adminEmail} / ${adminPass}   → /admin/login`);
@@ -551,6 +573,7 @@ async function main() {
 main()
   .catch((e) => {
     console.error(e);
-    process.exit(1);
+    process.exitCode = 1;
   })
-  .finally(() => prisma.$disconnect());
+  // Close the connection pool so the process can exit
+  .finally(() => pool.end());
