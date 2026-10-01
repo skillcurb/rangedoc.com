@@ -1,0 +1,203 @@
+/* ==================================================================
+   RangeDoc global styles – Tailwind CSS v4 (CSS-first config)
+   ------------------------------------------------------------------
+   Brand colours, fonts and reusable component classes live here so the
+   header, footer, buttons and text styles look the same on every page.
+   ================================================================== */
+@import "tailwindcss";
+
+/* ---- Design tokens (become Tailwind utilities: bg-brand-600, text-navy-900…) ---- */
+@theme {
+  --font-sans: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-heading), var(--font-body), ui-sans-serif, sans-serif;
+  --font-script: var(--font-script-face), cursive;
+
+  /* Primary green (buttons, accents) */
+  --color-brand-50: #ecf8f0;
+  --color-brand-100: #d3efdc;
+  --color-brand-200: #a8ddbb;
+  --color-brand-300: #72c592;
+  --color-brand-400: #3fa96a;
+  --color-brand-500: #1f914f;
+  --color-brand-600: #178343;
+  --color-brand-700: #126a36;
+  --color-brand-800: #11532d;
+  --color-brand-900: #0e4426;
+
+  /* Navy (headings, footer) */
+  --color-navy-50: #eef3fb;
+  --color-navy-100: #dae4f4;
+  --color-navy-200: #b5c7e8;
+  --color-navy-300: #819fd6;
+  --color-navy-400: #4f76bf;
+  --color-navy-500: #2e57a2;
+  --color-navy-600: #214387;
+  --color-navy-700: #19356d;
+  --color-navy-800: #132b5a;
+  --color-navy-900: #0c2250;
+  --color-navy-950: #081938;
+
+  --color-ink: #1f2a44;
+  --color-muted: #5d6985;
+  --color-line: #e3e8f1;
+  --color-surface: #f5f8fc;
+
+  --shadow-card: 0 1px 2px rgb(16 33 72 / 0.05), 0 4px 16px rgb(16 33 72 / 0.06);
+  --shadow-pop: 0 12px 40px rgb(16 33 72 / 0.16);
+  --shadow-lift: 0 18px 48px -12px rgb(16 33 72 / 0.28);
+  --shadow-glow: 0 10px 30px -8px rgb(23 131 67 / 0.55);
+
+  /* ---- Motion (all animations are disabled for "reduce motion" users below) ---- */
+  --animate-shimmer: shimmer 1.4s ease-in-out infinite;
+  --animate-fade-up: fade-up 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-fade-in: fade-in 0.4s ease-out both;
+  --animate-pop-in: pop-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-slide-down: slide-down 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-slide-up: slide-up 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-float: float 6s ease-in-out infinite;
+  --animate-blob: blob 18s ease-in-out infinite;
+  --animate-gradient: gradient-pan 8s ease infinite;
+
+  @keyframes shimmer {
+    0% { background-position: -400px 0; }
+    100% { background-position: 400px 0; }
+  }
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(28px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes pop-in {
+    from { opacity: 0; transform: translateY(8px) scale(0.97); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes slide-down {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes slide-up {
+    from { opacity: 0; transform: translateY(40px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0) rotate(-2deg); }
+    50% { transform: translateY(-10px) rotate(1deg); }
+  }
+  @keyframes blob {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    33% { transform: translate(40px, -30px) scale(1.08); }
+    66% { transform: translate(-30px, 20px) scale(0.95); }
+  }
+  @keyframes gradient-pan {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+  }
+}
+
+/* ---- Base ---- */
+@layer base {
+  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+  body { @apply bg-white font-sans text-ink antialiased; }
+  h1, h2, h3, h4 { @apply font-display text-navy-900; letter-spacing: -0.01em; }
+  ::selection { @apply bg-brand-200 text-navy-900; }
+  :focus-visible { @apply outline-2 outline-offset-2 outline-brand-500; }
+}
+
+/* ---- Reusable components ---- */
+@layer components {
+  /* Page width container */
+  .container-x { @apply mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8; }
+
+  /* Buttons – every variant shares the base styles; size classes come last so they win */
+  .btn, .btn-primary, .btn-outline, .btn-navy, .btn-ghost, .btn-light, .btn-danger {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold whitespace-nowrap transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .btn-primary {
+    @apply bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-sm hover:-translate-y-px hover:shadow-glow active:translate-y-0;
+    transition-property: transform, box-shadow, background-color, color, opacity;
+  }
+  .btn-outline { @apply border border-brand-600 bg-white text-brand-700 hover:-translate-y-px hover:bg-brand-50 hover:shadow-md; transition-property: transform, box-shadow, background-color, color; }
+  .btn-navy { @apply bg-navy-900 text-white hover:bg-navy-800; }
+  .btn-ghost { @apply text-navy-800 hover:bg-navy-50; }
+  .btn-light { @apply border border-line bg-white text-navy-900 hover:bg-surface; }
+  .btn-danger { @apply bg-red-600 text-white hover:bg-red-700; }
+  .btn-sm { @apply px-3 py-1.5 text-xs; }
+  .btn-lg { @apply px-6 py-3 text-base; }
+
+  /* Form controls */
+  .label { @apply mb-1.5 block text-sm font-medium text-navy-900; }
+  .input { @apply w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm text-ink placeholder:text-muted/70 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none; }
+  .checkbox { @apply size-4 rounded border-line accent-brand-600; }
+  .help { @apply mt-1 text-xs text-muted; }
+
+  /* Cards & surfaces */
+  .card { @apply rounded-xl border border-line bg-white shadow-card; }
+  /* Card that lifts on hover (tiles, provider cards, products, posts) */
+  .card-hover { @apply transition duration-300 ease-out hover:-translate-y-1 hover:border-brand-200 hover:shadow-lift; }
+  /* Soft brand gradient text for highlights */
+  .text-gradient { @apply bg-gradient-to-r from-brand-600 via-brand-500 to-navy-500 bg-clip-text text-transparent; }
+  /* Round gradient icon bubble */
+  .icon-bubble { @apply grid place-items-center rounded-2xl bg-gradient-to-br from-brand-50 to-brand-100 text-brand-700 ring-1 ring-brand-200/60; }
+  .chip { @apply inline-flex items-center gap-1 rounded-full border border-line bg-white px-2.5 py-0.5 text-xs text-navy-800; }
+  .badge { @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium; }
+  .link { @apply font-medium text-navy-600 hover:text-brand-700 hover:underline; }
+
+  /* Section headings */
+  .eyebrow { @apply text-xs font-bold tracking-[0.18em] text-navy-900 uppercase; }
+  .section-title { @apply text-center font-display text-2xl font-bold text-navy-900 sm:text-3xl; }
+  .section-subtitle { @apply mt-1 text-center text-sm text-muted sm:text-base; }
+
+  /* Skeleton placeholder while Suspense content loads */
+  .skeleton { @apply rounded-md bg-navy-100/60; background-image: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.6), transparent); background-size: 400px 100%; background-repeat: no-repeat; animation: var(--animate-shimmer); }
+
+  /* Rich text (blog posts, CMS pages, provider bios) */
+  .prose-rd { @apply text-[15px] leading-7 text-ink; }
+  .prose-rd h2 { @apply mt-8 mb-3 text-2xl font-bold; }
+  .prose-rd h3 { @apply mt-6 mb-2 text-xl font-bold; }
+  .prose-rd p { @apply my-4; }
+  .prose-rd a { @apply text-brand-700 underline; }
+  .prose-rd ul { @apply my-4 list-disc pl-6; }
+  .prose-rd ol { @apply my-4 list-decimal pl-6; }
+  .prose-rd li { @apply my-1; }
+  .prose-rd img { @apply my-6 rounded-xl; }
+  .prose-rd blockquote { @apply my-6 border-l-4 border-brand-500 bg-brand-50 px-4 py-3 text-navy-800 italic; }
+  .prose-rd table { @apply my-6 w-full border-collapse text-sm; }
+  .prose-rd th, .prose-rd td { @apply border border-line px-3 py-2 text-left; }
+
+  /* Hide scrollbars on horizontal carousels */
+  .no-scrollbar { scrollbar-width: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+}
+
+/* Leaflet map tiles should never be tinted by our styles */
+.leaflet-container { font: inherit; z-index: 0; }
+.rd-marker { background: transparent; border: 0; }
+
+/* TipTap editor placeholder */
+.tiptap p.is-editor-empty:first-child::before { content: attr(data-placeholder); float: left; height: 0; color: #9aa4b8; pointer-events: none; }
+.tiptap img.ProseMirror-selectednode { outline: 3px solid var(--color-brand-400); }
+
+/* ==================================================================
+   Scroll-reveal: sections fade up as they enter the viewport.
+   Uses CSS scroll-driven animations (no JavaScript, SEO-safe). Browsers
+   without support simply show the content normally.
+   ================================================================== */
+@supports (animation-timeline: view()) {
+  .reveal {
+    animation: fade-up linear both;
+    animation-timeline: view();
+    animation-range: entry 0% cover 22%;
+  }
+}
+
+/* Decorative blurred colour blobs (hero backgrounds) */
+.blob { position: absolute; border-radius: 9999px; filter: blur(60px); opacity: 0.45; pointer-events: none; animation: var(--animate-blob); }
+
+/* Respect the "reduce motion" accessibility setting */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+  .reveal { animation: none !important; }
+}
