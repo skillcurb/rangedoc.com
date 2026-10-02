@@ -1,6 +1,6 @@
 # RangeDoc — Physical Therapist & Chiropractor Directory
 
-A complete, city-based healthcare provider directory built with **Next.js 16 (App Router)**, **React 19**, **TypeScript**, **Tailwind CSS 4**, **Drizzle ORM** and **MySQL**.
+A complete, city-based healthcare provider directory built with **Next.js 16 (App Router)**, **React 19**, **TypeScript**, **Tailwind CSS 4**, **Drizzle ORM** and **MySQL / MariaDB** (cPanel-ready).
 
 Visitors search for licensed Physical Therapists and Chiropractors by pain area and location, compare providers, and contact them (appointment request, call, email, website). Providers claim their profiles (free or paid plans) and manage everything from their dashboard. Admins control all content, pricing, SEO, payments and analytics from `/admin`.
 
@@ -10,7 +10,7 @@ Visitors search for licensed Physical Therapists and Chiropractors by pain area 
 
 ### Requirements
 - **Node.js 20.19+** (22 LTS recommended)
-- **MySQL 8.0+** or **MariaDB 10.6+** (local, Docker, cPanel hosting, or hosted: PlanetScale, AWS RDS, DigitalOcean, Railway…)
+- **MySQL 8.0+** or **MariaDB 10.6+** – the same code runs on both (tested on MySQL 8.0 and MariaDB 10.11). On cPanel hosting use MariaDB – see [Deploying on cPanel](#deploying-on-cpanel-mariadb).
 
 ### Install
 ```bash
@@ -55,6 +55,39 @@ npm start              # or run behind PM2 / systemd / Docker
 - Uploaded files are saved in `storage/uploads` (change with `UPLOAD_DIR`). **Keep this folder on persistent disk and back it up.** On serverless hosts without a disk, switch `src/lib/uploads.ts` to S3/Cloudflare R2.
 - Database tables come from the SQL migrations in `/drizzle` (generated from `src/db/schema.ts`). Run `npm run db:migrate` on each release – it only applies migrations that haven't run yet.
 - Changing the data model: edit `src/db/schema.ts` → `npm run db:generate` (writes a new SQL file into `/drizzle`, review it) → `npm run db:migrate`. For quick local experiments `npm run db:push` syncs tables without a migration file. `npm run db:studio` opens Drizzle Studio to browse the data.
+
+### Deploying on cPanel (MariaDB)
+cPanel servers usually run **MariaDB** instead of MySQL. RangeDoc works on it without changes. You need a cPanel plan with **"Setup Node.js App"** (CloudLinux) and **Terminal** or SSH access.
+
+1. **Create the database** – cPanel → *MySQL® Databases* (this page manages MariaDB too):
+   - create a database, e.g. `rangedoc` → cPanel names it `cpuser_rangedoc`
+   - create a user with a strong password → `cpuser_rdadmin`
+   - *Add User To Database* → tick **ALL PRIVILEGES**
+
+   The character set doesn't matter: the first migration switches the database to `utf8mb4` (full Unicode, emoji) by itself.
+2. **Upload the code** – upload the project (without `node_modules` and `.next`) to e.g. `/home/cpuser/rangedoc` with *File Manager* or Git™ Version Control. Keep it **outside** `public_html`.
+3. **Create the Node.js app** – cPanel → *Setup Node.js App* → *Create Application*:
+   - Node.js version: **22** (or 20.19+) · Application mode: **Production**
+   - Application root: `rangedoc` · Application URL: your domain
+   - Application startup file: **`server.js`** (included – Passenger can't run `next start` directly)
+4. **Environment variables** – either add them in the same screen (*Environment variables*) or create `/home/cpuser/rangedoc/.env` from `.env.example`:
+   ```
+   DATABASE_URL="mysql://cpuser_rdadmin:PASSWORD@localhost:3306/cpuser_rangedoc"
+   AUTH_SECRET="…long random string…"
+   NEXT_PUBLIC_SITE_URL="https://www.yourdomain.com"
+   ```
+   URL-encode special characters in the password (`@` → `%40`, `#` → `%23`, `/` → `%2F`).
+5. **Install, create tables, build** – copy the "Enter to the virtual environment" command shown at the top of the Node.js app page, run it in *Terminal*, then:
+   ```bash
+   npm install
+   npm run setup        # creates all tables + demo content (skip the seed on a live site: npm run db:migrate)
+   npm run build
+   ```
+   If the build stops with an out-of-memory error (common on small shared plans), run `npm run build` on your computer with the same `NEXT_PUBLIC_SITE_URL`, then upload the generated `.next` folder.
+6. Click **Restart** on the Node.js app page and open your domain.
+7. Updates later: upload the new code → `npm install` → `npm run db:migrate` → `npm run build` → **Restart**.
+
+Uploaded images go to `storage/uploads` inside the app folder – include it in your cPanel backups.
 
 ---
 
@@ -154,8 +187,10 @@ All numbers and switches are editable per plan.
 ```
 src/db/schema.ts            Drizzle data model – every MySQL table (utf8mb4). Money stored as integer cents.
 src/db/relations.ts         Table relations for db.query.* (nested loading with `with`)
+src/db/relational.ts        MariaDB-safe loader for `with` relations (simple IN (…) queries instead of MySQL-8-only sub-queries)
 src/db/seed.ts              Demo content (npm run db:seed)
-src/lib/db.ts               Drizzle client (mysql2 pool) + helpers (pluck, insertId, isDuplicateKey)
+src/lib/db.ts               Drizzle client (mysql2 pool, MySQL + MariaDB) + helpers (pluck, insertId, isDuplicateKey)
+server.js                   Startup file for cPanel / Passenger (runs the built app on $PORT)
 drizzle/                    SQL migrations (initial migration included)
 drizzle.config.ts           Drizzle Kit config (DB URL, schema path, migrations folder)
 src/proxy.ts                Next 16 "proxy" (middleware): protects /admin & /dashboard, sets visitor cookie
@@ -190,6 +225,12 @@ src/components/…            UI (site, profile, search, dashboard, admin, media
 - Sections fade up as they scroll into view using **CSS scroll-driven animations** (no JavaScript, so content stays visible to search engines and older browsers simply show it without animation).
 - Cards lift with soft shadows on hover, buttons use a subtle green gradient with a glow, modals/menus animate in, and the hero has slowly moving gradient blobs.
 - Everything respects the visitor's **“reduce motion”** system setting. Colours, shadows and animations are defined once in `src/app/globals.css`.
+
+### MySQL & MariaDB compatibility
+The same code and migrations run on MySQL 8 and MariaDB 10.6+. To keep it that way when you add features:
+- Use Drizzle's query builder / `db.query.*` – nested `with` relations are loaded by `src/db/relational.ts`, which only sends plain SELECTs.
+- In hand-written `sql\`…\`` avoid MySQL-only syntax: `LATERAL`, `JSON_TABLE`, the `->` / `->>` JSON operators, `ANY_VALUE()`, `ST_Distance_Sphere`, and `INSERT … AS new ON DUPLICATE KEY UPDATE`. (Distances are calculated in JavaScript, so search needs none of these.)
+- JSON columns are declared with the `json` helper in `src/db/schema.ts`, which also reads MariaDB's text-based JSON correctly.
 
 ### Notes & limitations
 - **“Save” to browser bookmarks**: browsers do not allow websites to create bookmarks. The Save button stores the provider in the visitor's **Saved providers** list (`/saved`) and shows the Ctrl/⌘ + D shortcut to bookmark the page.

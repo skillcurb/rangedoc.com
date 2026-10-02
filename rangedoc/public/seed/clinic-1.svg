@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500"><rect width="800" height="500" fill="#eef2f5"/>
-<rect y="360" width="800" height="140" fill="#d8cbb8"/><rect x="60" y="60" width="220" height="160" fill="#cfe3f2" stroke="#fff" stroke-width="8"/>
-<rect x="520" y="70" width="200" height="120" fill="#1f8f4c" opacity=".12"/><text x="620" y="140" font-family="Arial" font-size="26" font-weight="bold" text-anchor="middle" fill="#1f8f4c">CLINIC</text>
-<rect x="300" y="250" width="300" height="110" rx="8" fill="#ffffff" stroke="#e2e6ec"/>
-<rect x="560" y="300" width="160" height="30" rx="6" fill="#1f8f4c" opacity=".85"/><rect x="570" y="330" width="10" height="40" fill="#8a8f98"/><rect x="700" y="330" width="10" height="40" fill="#8a8f98"/>
-<ellipse cx="740" cy="330" rx="30" ry="60" fill="#3f7f5f"/><rect x="725" y="350" width="30" height="40" fill="#b08a6a"/>
-<ellipse cx="40" cy="330" rx="24" ry="50" fill="#4c8f6a"/><rect x="28" y="350" width="24" height="36" fill="#b08a6a"/></svg>

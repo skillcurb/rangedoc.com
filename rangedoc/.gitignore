@@ -1,9 +1,0 @@
-node_modules
-.next
-out
-.env
-.env.local
-/storage/uploads/*
-!/storage/uploads/.gitkeep
-*.tsbuildinfo
-next-env.d.ts

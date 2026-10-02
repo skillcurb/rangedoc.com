@@ -2,7 +2,7 @@
   "name": "rangedoc",
   "version": "1.0.0",
   "private": true,
-  "description": "RangeDoc - find licensed Physical Therapists & Chiropractors near you. Next.js + Drizzle ORM + MySQL.",
+  "description": "RangeDoc - find licensed Physical Therapists & Chiropractors near you. Next.js + Drizzle ORM + MySQL/MariaDB.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

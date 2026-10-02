@@ -1,9 +1,13 @@
 /**
- * Drizzle database client (MySQL) + small query helpers.
+ * Drizzle database client (MySQL / MariaDB) + small query helpers.
  * ------------------------------------------------------------------
  * Drizzle talks to MySQL through the `mysql2` driver. One connection
  * pool is created and cached on `globalThis`, so Next.js hot-reloading in
  * development doesn't open a new pool on every file change.
+ *
+ * Works with MySQL 5.7/8.x and MariaDB 10.5+ (cPanel). The only MySQL-only
+ * SQL Drizzle generates is in nested `with` queries – those are rewritten
+ * by enableSafeRelationalQueries() below.
  *
  * Usage:
  *   import { db, t, eq } from "@/lib/db";
@@ -15,6 +19,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import mysql from "mysql2/promise";
 import * as schema from "@/db/schema";
 import * as relations from "@/db/relations";
+import { enableSafeRelationalQueries } from "@/db/relational";
 
 // Re-export the tables (as `t`) and the query operators most files need,
 // so a page only has to import from "@/lib/db".
@@ -30,16 +35,18 @@ function createDb() {
     // Keep DATETIME values in UTC (Drizzle reads/writes them as UTC strings)
     timezone: "Z",
   });
-  return drizzle({
+  const database = drizzle({
     client: pool,
     schema: { ...schema, ...relations },
     // camelCase in TypeScript ⇄ snake_case columns in MySQL
     casing: "snake_case",
-    // "planetscale" mode builds nested `with: {…}` queries without LATERAL
-    // joins, so the relational API works on every MySQL 8 version and on
-    // MariaDB too (common on shared/cPanel hosting).
+    // "planetscale" mode = no LATERAL joins in generated SQL
     mode: "planetscale",
   });
+  // Load `with: {…}` relations with simple IN (…) queries instead of
+  // correlated sub-queries, so everything also runs on MariaDB (cPanel).
+  // See src/db/relational.ts.
+  return enableSafeRelationalQueries(database);
 }
 
 const globalForDb = globalThis as unknown as { db?: ReturnType<typeof createDb> };
